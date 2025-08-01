@@ -6,6 +6,31 @@ Official Swift language binding for [Kuzu](https://github.com/kuzudb/kuzu). Kuzu
 
 To add kuzu-swift to your Swift project, you can use the Swift Package Manager:
 
+### Option 1: Using Pre-built XCFramework (Recommended for faster builds)
+
+Using the pre-built XCFramework significantly reduces build times by avoiding compilation of the C++ code.
+
+1. Check the [releases page](https://github.com/kuzudb/kuzu-swift/releases) for the latest version with XCFramework.
+2. Add the binary target to your Package.swift:
+   ```swift
+   dependencies: [
+       .package(url: "https://github.com/kuzudb/kuzu-swift/", exact: "VERSION"),
+   ],
+   targets: [
+       .target(
+           name: "YourTarget",
+           dependencies: [
+               .product(name: "Kuzu", package: "kuzu-swift"),
+           ]
+       )
+   ]
+   ```
+   Replace `VERSION` with the desired version (e.g., "0.11.1").
+
+### Option 2: Building from Source
+
+If you need to build from source or use the latest development version:
+
 1. Add `.package(url: "https://github.com/kuzudb/kuzu-swift/", branch: "main"),` to your Package.swift dependencies.
    You can change the branch to a tag to use a specific version, e.g., `.package(url: "https://github.com/kuzudb/kuzu-swift/", branch: "0.11.0"),` to use version 0.11.0.
 2. Add `Kuzu` to your target dependencies.
@@ -15,7 +40,9 @@ To add kuzu-swift to your Swift project, you can use the Swift Package Manager:
     ]
     ```
 
-Alternatively, you can add the package through Xcode:
+### Using Xcode
+
+You can add the package through Xcode:
 1. Open your Xcode project.
 2. Go to `File` > `Add Packages Dependencies...`.
 3. Enter the URL of the kuzu-swift repository: `https://github.com/kuzudb/kuzu-swift`.

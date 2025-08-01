@@ -1,0 +1,98 @@
+name: Release XCFramework
+
+on:
+  release:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag name for manual release'
+        required: false
+        type: string
+
+jobs:
+  build-xcframework:
+    runs-on: macos-14
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+        
+    - name: Setup Xcode
+      uses: maxim-lobanov/setup-xcode@v1
+      with:
+        xcode-version: latest-stable
+        
+    - name: Install xcpretty
+      run: gem install xcpretty
+        
+    - name: Build XCFramework
+      run: |
+        chmod +x Scripts/build-xcframework.sh
+        ./Scripts/build-xcframework.sh
+        
+    - name: Prepare release assets
+      id: prepare
+      run: |
+        # Get tag name
+        if [ "${{ github.event_name }}" = "release" ]; then
+          TAG_NAME="${{ github.event.release.tag_name }}"
+        else
+          TAG_NAME="${{ github.event.inputs.tag_name || 'manual' }}"
+        fi
+        
+        # Calculate checksum
+        CHECKSUM=$(swift package compute-checksum build/Kuzu.xcframework.zip)
+        echo "checksum=${CHECKSUM}" >> $GITHUB_OUTPUT
+        echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
+        
+        # Create Package.swift for binary distribution
+        cp Package.binary.swift Package.swift.binary
+        sed -i '' "s/VERSION/${TAG_NAME}/g" Package.swift.binary
+        sed -i '' "s/CHECKSUM_PLACEHOLDER/${CHECKSUM}/g" Package.swift.binary
+        
+        # Display info
+        echo "Tag: ${TAG_NAME}"
+        echo "Checksum: ${CHECKSUM}"
+        echo "Framework size: $(du -sh build/Kuzu.xcframework | cut -f1)"
+        echo "Zip size: $(du -sh build/Kuzu.xcframework.zip | cut -f1)"
+        
+    - name: Upload XCFramework to release
+      if: github.event_name == 'release'
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          build/Kuzu.xcframework.zip
+          Package.swift.binary
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Upload artifacts (manual trigger)
+      if: github.event_name == 'workflow_dispatch'
+      uses: actions/upload-artifact@v4
+      with:
+        name: kuzu-xcframework
+        path: |
+          build/Kuzu.xcframework.zip
+          Package.swift.binary
+        retention-days: 7
+        
+    - name: Display usage instructions
+      run: |
+        echo "## 📦 XCFramework Release Info"
+        echo ""
+        echo "### Binary Package.swift Usage:"
+        echo "\`\`\`swift"
+        echo ".binaryTarget("
+        echo "    name: \"Kuzu\","
+        echo "    url: \"https://github.com/kuzudb/kuzu-swift/releases/download/${{ steps.prepare.outputs.tag_name }}/Kuzu.xcframework.zip\","
+        echo "    checksum: \"${{ steps.prepare.outputs.checksum }}\""
+        echo ")"
+        echo "\`\`\`"
+        echo ""
+        echo "### SPM Dependency:"
+        echo "\`\`\`swift"
+        echo ".package(url: \"https://github.com/kuzudb/kuzu-swift.git\", exact: \"${{ steps.prepare.outputs.tag_name }}\")"
+        echo "\`\`\`"
