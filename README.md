@@ -6,14 +6,18 @@ Official Swift language binding for [Kuzu](https://github.com/kuzudb/kuzu). Kuzu
 
 To add kuzu-swift to your Swift project, you can use the Swift Package Manager.
 
-### Option 1: Binary Distribution (Recommended for faster builds)
+### Installation
 
-Using the pre-built XCFramework significantly reduces build times by avoiding compilation of the C++ code.
+kuzu-swift offers two distribution options:
+
+#### Option 1: Binary Distribution (Recommended)
+
+Use pre-built XCFramework for faster builds:
 
 ```swift
 // In your Package.swift
 dependencies: [
-    .package(url: "https://github.com/kuzudb/kuzu-swift", exact: "0.11.1"),  // Use specific version tag
+    .package(url: "https://github.com/1amageek/kuzu-swift", exact: "0.11.1"),
 ],
 targets: [
     .target(
@@ -25,42 +29,26 @@ targets: [
 ]
 ```
 
-Replace `"0.11.1"` with the desired version. Check the [releases page](https://github.com/kuzudb/kuzu-swift/releases) for available versions.
+#### Option 2: Source Distribution
 
-### Option 2: Source Distribution (For development/customization)
-
-If you need to build from source or use the latest development version:
+For development, debugging, or customization:
 
 ```swift
 // In your Package.swift
 dependencies: [
-    .package(url: "https://github.com/kuzudb/kuzu-swift", branch: "main"),  // Latest development
+    .package(url: "https://github.com/1amageek/kuzu-swift", exact: "0.11.1"),
 ],
 targets: [
     .target(
         name: "YourTarget",
         dependencies: [
-            .product(name: "Kuzu", package: "kuzu-swift"),
+            .product(name: "KuzuSource", package: "kuzu-swift"),
         ]
     )
 ]
 ```
 
-### Developer Option: Testing Binary Distribution Locally
-
-For development and testing purposes, you can use environment variables to switch between source and binary builds:
-
-```bash
-# Use binary distribution
-export KUZU_USE_BINARY=1
-export KUZU_BINARY_URL="https://github.com/kuzudb/kuzu-swift/releases/download/v0.11.1/Kuzu.xcframework.zip"
-export KUZU_BINARY_CHECKSUM="your-checksum-here"
-swift build
-
-# Use source distribution (default)
-unset KUZU_USE_BINARY
-swift build
-```
+Replace `"0.11.1"` with the desired version. Check the [releases page](https://github.com/1amageek/kuzu-swift/releases) for available versions.
 
 ### Using Xcode
 

@@ -2,12 +2,6 @@
 // The swift-tools-version declares the minimum version of Swift required to build this package.
 
 import PackageDescription
-import Foundation
-
-// Development option: Use KUZU_USE_BINARY=1 to test binary distribution locally
-let useBinaryDistribution = ProcessInfo.processInfo.environment["KUZU_USE_BINARY"] != nil
-let binaryURL = ProcessInfo.processInfo.environment["KUZU_BINARY_URL"] ?? "https://github.com/kuzudb/kuzu-swift/releases/download/VERSION/Kuzu.xcframework.zip"
-let binaryChecksum = ProcessInfo.processInfo.environment["KUZU_BINARY_CHECKSUM"] ?? "CHECKSUM_PLACEHOLDER"
 
 let package = Package(
     name: "kuzu-swift",
@@ -16,36 +10,30 @@ let package = Package(
         .iOS(.v14),
     ],
     products: [
-        // Products define the executables and libraries a package produces, making them visible to other packages.
+        // Binary distribution (default)
         .library(
             name: "Kuzu",
             targets: ["Kuzu"]),
+        // Source distribution (for development)
+        .library(
+            name: "KuzuSource",
+            targets: ["KuzuSource"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-docc-plugin", branch: "1.4.5"),
     ],
-    targets: useBinaryDistribution ? [
+    targets: [
         // Binary distribution target
         .binaryTarget(
             name: "Kuzu",
-            url: binaryURL,
-            checksum: binaryChecksum
+            url: "https://github.com/1amageek/kuzu-swift/releases/download/v0.11.1/Kuzu.xcframework.zip",
+            checksum: "b13968dea0cc5c97e6e7ab7d500a4a8ddc7ddb420b36e25f28eb2bf0de49c1f9"
         ),
-        .testTarget(
-            name: "KuzuTests",
-            dependencies: ["Kuzu"],
-            resources: [
-                .copy("Dataset")
-            ],
-            linkerSettings: [
-                .linkedLibrary("atomic", .when(platforms: [.linux]))
-            ]
-        )
-    ] : [
-        // Source distribution targets
+        // Source distribution target
         .target(
-            name: "Kuzu",
-            dependencies: ["cxx-kuzu"]
+            name: "KuzuSource",
+            dependencies: ["cxx-kuzu"],
+            path: "Sources/Kuzu"
         ),
         .target(
             name: "cxx-kuzu",
