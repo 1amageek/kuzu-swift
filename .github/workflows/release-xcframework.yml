@@ -30,8 +30,8 @@ jobs:
         
     - name: Build XCFramework
       run: |
-        chmod +x Scripts/build-xcframework.sh
-        ./Scripts/build-xcframework.sh
+        chmod +x Scripts/build-spm-xcframework.sh
+        ./Scripts/build-spm-xcframework.sh Kuzu
         
     - name: Prepare release assets
       id: prepare

@@ -1,0 +1,8 @@
+{
+  "release": {
+    "tag_name": "v0.11.1",
+    "name": "v0.11.1 - XCFramework Support",
+    "draft": false,
+    "prerelease": false
+  }
+}
