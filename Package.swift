@@ -2,6 +2,7 @@
 // The swift-tools-version declares the minimum version of Swift required to build this package.
 
 import PackageDescription
+import Foundation
 
 // Development option: Use KUZU_USE_BINARY=1 to test binary distribution locally
 let useBinaryDistribution = ProcessInfo.processInfo.environment["KUZU_USE_BINARY"] != nil
