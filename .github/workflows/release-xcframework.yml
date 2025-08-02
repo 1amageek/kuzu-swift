@@ -30,8 +30,8 @@ jobs:
         
     - name: Build XCFramework
       run: |
-        chmod +x Scripts/build-spm-xcframework.sh
-        ./Scripts/build-spm-xcframework.sh Kuzu
+        chmod +x Scripts/build-xcframework.sh
+        ./Scripts/build-xcframework.sh Kuzu
         
     - name: Prepare release assets
       id: prepare
@@ -47,9 +47,6 @@ jobs:
         CHECKSUM=$(swift package compute-checksum build/Kuzu.xcframework.zip)
         echo "checksum=${CHECKSUM}" >> $GITHUB_OUTPUT
         echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
-        
-        # Generate Package.swift for binary distribution
-        ./Scripts/generate-binary-package.sh "${TAG_NAME}" "${CHECKSUM}"
         
         # Display info
         echo "Tag: ${TAG_NAME}"
