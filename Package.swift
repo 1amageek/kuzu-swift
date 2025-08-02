@@ -6,8 +6,8 @@ import Foundation
 
 // Development option: Use KUZU_USE_BINARY=1 to test binary distribution locally
 let useBinaryDistribution = ProcessInfo.processInfo.environment["KUZU_USE_BINARY"] != nil
-let binaryURL = ProcessInfo.processInfo.environment["KUZU_BINARY_URL"] ?? "https://github.com/kuzudb/kuzu-swift/releases/download/VERSION/Kuzu.xcframework.zip"
-let binaryChecksum = ProcessInfo.processInfo.environment["KUZU_BINARY_CHECKSUM"] ?? "CHECKSUM_PLACEHOLDER"
+let binaryURL = ProcessInfo.processInfo.environment["KUZU_BINARY_URL"] ?? "https://github.com/1amageek/kuzu-swift/releases/download/v0.11.1/Kuzu.xcframework.zip"
+let binaryChecksum = ProcessInfo.processInfo.environment["KUZU_BINARY_CHECKSUM"] ?? "b13968dea0cc5c97e6e7ab7d500a4a8ddc7ddb420b36e25f28eb2bf0de49c1f9"
 
 let package = Package(
     name: "kuzu-swift",
