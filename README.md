@@ -4,41 +4,63 @@ Official Swift language binding for [Kuzu](https://github.com/kuzudb/kuzu). Kuzu
 
 ## Get started
 
-To add kuzu-swift to your Swift project, you can use the Swift Package Manager:
+To add kuzu-swift to your Swift project, you can use the Swift Package Manager.
 
-### Option 1: Using Pre-built XCFramework (Recommended for faster builds)
+### Option 1: Binary Distribution (Recommended for faster builds)
 
 Using the pre-built XCFramework significantly reduces build times by avoiding compilation of the C++ code.
 
-1. Check the [releases page](https://github.com/kuzudb/kuzu-swift/releases) for the latest version with XCFramework.
-2. Add the binary target to your Package.swift:
-   ```swift
-   dependencies: [
-       .package(url: "https://github.com/kuzudb/kuzu-swift/", exact: "VERSION"),
-   ],
-   targets: [
-       .target(
-           name: "YourTarget",
-           dependencies: [
-               .product(name: "Kuzu", package: "kuzu-swift"),
-           ]
-       )
-   ]
-   ```
-   Replace `VERSION` with the desired version (e.g., "0.11.1").
+```swift
+// In your Package.swift
+dependencies: [
+    .package(url: "https://github.com/kuzudb/kuzu-swift", exact: "0.11.1"),  // Use specific version tag
+],
+targets: [
+    .target(
+        name: "YourTarget",
+        dependencies: [
+            .product(name: "Kuzu", package: "kuzu-swift"),
+        ]
+    )
+]
+```
 
-### Option 2: Building from Source
+Replace `"0.11.1"` with the desired version. Check the [releases page](https://github.com/kuzudb/kuzu-swift/releases) for available versions.
+
+### Option 2: Source Distribution (For development/customization)
 
 If you need to build from source or use the latest development version:
 
-1. Add `.package(url: "https://github.com/kuzudb/kuzu-swift/", branch: "main"),` to your Package.swift dependencies.
-   You can change the branch to a tag to use a specific version, e.g., `.package(url: "https://github.com/kuzudb/kuzu-swift/", branch: "0.11.0"),` to use version 0.11.0.
-2. Add `Kuzu` to your target dependencies.
-   ```swift
-    dependencies: [
-        .product(name: "Kuzu", package: "kuzu-swift"),
-    ]
-    ```
+```swift
+// In your Package.swift
+dependencies: [
+    .package(url: "https://github.com/kuzudb/kuzu-swift", branch: "main"),  // Latest development
+],
+targets: [
+    .target(
+        name: "YourTarget",
+        dependencies: [
+            .product(name: "Kuzu", package: "kuzu-swift"),
+        ]
+    )
+]
+```
+
+### Developer Option: Testing Binary Distribution Locally
+
+For development and testing purposes, you can use environment variables to switch between source and binary builds:
+
+```bash
+# Use binary distribution
+export KUZU_USE_BINARY=1
+export KUZU_BINARY_URL="https://github.com/kuzudb/kuzu-swift/releases/download/v0.11.1/Kuzu.xcframework.zip"
+export KUZU_BINARY_CHECKSUM="your-checksum-here"
+swift build
+
+# Use source distribution (default)
+unset KUZU_USE_BINARY
+swift build
+```
 
 ### Using Xcode
 

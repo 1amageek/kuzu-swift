@@ -3,6 +3,11 @@
 
 import PackageDescription
 
+// Development option: Use KUZU_USE_BINARY=1 to test binary distribution locally
+let useBinaryDistribution = ProcessInfo.processInfo.environment["KUZU_USE_BINARY"] != nil
+let binaryURL = ProcessInfo.processInfo.environment["KUZU_BINARY_URL"] ?? "https://github.com/kuzudb/kuzu-swift/releases/download/VERSION/Kuzu.xcframework.zip"
+let binaryChecksum = ProcessInfo.processInfo.environment["KUZU_BINARY_CHECKSUM"] ?? "CHECKSUM_PLACEHOLDER"
+
 let package = Package(
     name: "kuzu-swift",
     platforms: [
@@ -18,9 +23,25 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/apple/swift-docc-plugin", branch: "1.4.5"),
     ],
-    targets: [
-        // Targets are the basic building blocks of a package, defining a module or a test suite.
-        // Targets can depend on other targets in this package and products from dependencies.
+    targets: useBinaryDistribution ? [
+        // Binary distribution target
+        .binaryTarget(
+            name: "Kuzu",
+            url: binaryURL,
+            checksum: binaryChecksum
+        ),
+        .testTarget(
+            name: "KuzuTests",
+            dependencies: ["Kuzu"],
+            resources: [
+                .copy("Dataset")
+            ],
+            linkerSettings: [
+                .linkedLibrary("atomic", .when(platforms: [.linux]))
+            ]
+        )
+    ] : [
+        // Source distribution targets
         .target(
             name: "Kuzu",
             dependencies: ["cxx-kuzu"]

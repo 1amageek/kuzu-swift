@@ -2,6 +2,12 @@
 
 This guide explains how to set up XCFramework distribution for kuzu-swift.
 
+## Distribution Strategy
+
+This project uses a hybrid approach:
+- **Development**: Environment variables for testing binary distribution
+- **Production**: Dedicated `binary-distribution` branch for releases
+
 ## Repository Settings (Manual Setup Required)
 
 ### 1. Enable GitHub Actions

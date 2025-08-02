@@ -48,10 +48,8 @@ jobs:
         echo "checksum=${CHECKSUM}" >> $GITHUB_OUTPUT
         echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
         
-        # Create Package.swift for binary distribution
-        cp Package.binary.swift Package.swift.binary
-        sed -i '' "s/VERSION/${TAG_NAME}/g" Package.swift.binary
-        sed -i '' "s/CHECKSUM_PLACEHOLDER/${CHECKSUM}/g" Package.swift.binary
+        # Generate Package.swift for binary distribution
+        ./Scripts/generate-binary-package.sh "${TAG_NAME}" "${CHECKSUM}"
         
         # Display info
         echo "Tag: ${TAG_NAME}"
@@ -65,9 +63,31 @@ jobs:
       with:
         files: |
           build/Kuzu.xcframework.zip
-          Package.swift.binary
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Push to binary-distribution branch
+      run: |
+        # Configure git
+        git config --global user.name "GitHub Actions"
+        git config --global user.email "actions@github.com"
+        
+        # Create or update binary-distribution branch
+        git checkout -B binary-distribution
+        
+        # Remove source files
+        rm -rf Sources Tests Example
+        
+        # Commit the binary Package.swift
+        git add Package.swift
+        git commit -m "Update binary distribution for ${{ steps.prepare.outputs.tag_name }}"
+        
+        # Push to binary-distribution branch
+        git push origin binary-distribution --force
+        
+        # Create a tag on binary-distribution branch
+        git tag -f "${{ steps.prepare.outputs.tag_name }}-binary"
+        git push origin "${{ steps.prepare.outputs.tag_name }}-binary" --force
         
     - name: Upload artifacts (manual trigger)
       if: github.event_name == 'workflow_dispatch'
@@ -76,7 +96,7 @@ jobs:
         name: kuzu-xcframework
         path: |
           build/Kuzu.xcframework.zip
-          Package.swift.binary
+          Package.swift
         retention-days: 7
         
     - name: Display usage instructions
