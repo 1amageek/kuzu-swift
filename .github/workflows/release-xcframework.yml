@@ -1,8 +1,9 @@
 name: Release XCFramework
 
 on:
-  release:
-    types: [created]
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       tag_name:
@@ -37,8 +38,8 @@ jobs:
       id: prepare
       run: |
         # Get tag name
-        if [ "${{ github.event_name }}" = "release" ]; then
-          TAG_NAME="${{ github.event.release.tag_name }}"
+        if [ "${{ github.event_name }}" = "push" ]; then
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
         else
           TAG_NAME="${{ github.event.inputs.tag_name || 'manual' }}"
         fi
@@ -54,14 +55,59 @@ jobs:
         echo "Framework size: $(du -sh build/Kuzu.xcframework | cut -f1)"
         echo "Zip size: $(du -sh build/Kuzu.xcframework.zip | cut -f1)"
         
-    - name: Upload XCFramework to release
-      if: github.event_name == 'release'
+    - name: Create Release and Upload XCFramework
+      if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
       uses: softprops/action-gh-release@v1
       with:
+        tag_name: ${{ steps.prepare.outputs.tag_name }}
+        name: ${{ steps.prepare.outputs.tag_name }} - XCFramework Release
+        draft: false
+        prerelease: false
         files: |
           build/Kuzu.xcframework.zip
+        body: |
+          ## 📦 XCFramework Release
+          
+          This release includes pre-built XCFramework for faster builds.
+          
+          ### Installation
+          
+          ```swift
+          dependencies: [
+              .package(url: "https://github.com/1amageek/kuzu-swift", exact: "${{ steps.prepare.outputs.tag_name }}")
+          ]
+          ```
+          
+          ### Binary Target Configuration
+          
+          ```swift
+          .binaryTarget(
+              name: "Kuzu",
+              url: "https://github.com/1amageek/kuzu-swift/releases/download/${{ steps.prepare.outputs.tag_name }}/Kuzu.xcframework.zip",
+              checksum: "${{ steps.prepare.outputs.checksum }}"
+          )
+          ```
+          
+          ### Supported Platforms
+          - iOS (arm64)
+          - iOS Simulator (arm64)
+          - macOS (arm64)
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Update Package.swift with new checksum
+      if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+      run: |
+        # Update Package.swift with the new checksum
+        sed -i '' "s|let binaryChecksum = \".*\"|let binaryChecksum = \"${{ steps.prepare.outputs.checksum }}\"|" Package.swift
+        sed -i '' "s|let binaryURL = \".*\"|let binaryURL = \"https://github.com/1amageek/kuzu-swift/releases/download/${{ steps.prepare.outputs.tag_name }}/Kuzu.xcframework.zip\"|" Package.swift
+        
+        # Commit and push the updated Package.swift
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git add Package.swift
+        git commit -m "Update Package.swift with XCFramework checksum for ${{ steps.prepare.outputs.tag_name }}"
+        git push origin HEAD:main
         
     - name: Upload artifacts (manual trigger)
       if: github.event_name == 'workflow_dispatch'
