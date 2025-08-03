@@ -421,8 +421,7 @@ ENDPROJ
 
 # 3) Create Swift source file that re-exports the package
 echo "==> Creating Swift source file"
-mkdir -p "${WRAPPER_FRAMEWORK}"
-cat > "${WRAPPER_FRAMEWORK}/${WRAPPER_FRAMEWORK}.swift" << ENDSWIFT
+cat > "${WRAPPER_FRAMEWORK}.swift" << ENDSWIFT
 // Re-export the ${PRODUCT} module
 @_exported import ${PRODUCT}
 ENDSWIFT
@@ -531,7 +530,7 @@ xcodebuild -create-xcframework \
 # 6) Clean up
 echo "==> Cleaning up"
 rm -rf "${WRAPPER_PROJECT}.xcodeproj"
-rm -rf "${WRAPPER_FRAMEWORK}"
+rm -f "${WRAPPER_FRAMEWORK}.swift"
 rm -rf "${OUT_DIR}"/*.xcarchive
 
 # 7) Verify XCFramework
