@@ -12,3 +12,5 @@ Package.resolved
 Example/kuzu-swift-example
 .claude/
 CLAUDE.md
+build/
+KuzuWrapper.xcodeproj/

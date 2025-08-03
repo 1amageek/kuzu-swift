@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# build-spm-xcframework.sh
+# build-xcframework.sh
 # Swift Package から XCFramework を生成するユーティリティ
 #
-#   ./build-spm-xcframework.sh <ProductName> [<OutputDir>]
+#   ./build-xcframework.sh <ProductName> [<OutputDir>]
 #
 # 戦略：
 # 1. Swift Package をラップする Framework プロジェクトを作成
