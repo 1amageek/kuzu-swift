@@ -24,9 +24,6 @@ jobs:
       with:
         xcode-version: latest-stable
         
-    - name: Install xcpretty
-      run: gem install xcpretty
-        
     - name: Build XCFramework
       run: |
         chmod +x Scripts/build-xcframework.sh
