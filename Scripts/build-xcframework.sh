@@ -13,7 +13,7 @@
 set -euo pipefail
 
 # 0) 引数とディレクトリ設定
-PRODUCT="${1:?Error: product name required}"           # 例: KuzuSource
+PRODUCT="${1:?Error: product name required}"           # 例: Kuzu
 OUT_DIR="${2:-build}"
 WRAPPER_PROJECT="KuzuWrapper"
 WRAPPER_FRAMEWORK="KuzuFramework"
@@ -54,10 +54,12 @@ cat > "$PROJECT_FILE" << ENDPROJ
 
 /* Begin PBXBuildFile section */
 		1234567890ABCDEF /* ${PRODUCT} in Frameworks */ = {isa = PBXBuildFile; productRef = 1234567890ABCDE0 /* ${PRODUCT} */; };
+		1234567890SWIFT1 /* ${WRAPPER_FRAMEWORK}.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1234567890SWIFT0 /* ${WRAPPER_FRAMEWORK}.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		1234567890ABCDE1 /* ${WRAPPER_FRAMEWORK}.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = ${WRAPPER_FRAMEWORK}.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		1234567890SWIFT0 /* ${WRAPPER_FRAMEWORK}.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ${WRAPPER_FRAMEWORK}.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -75,6 +77,7 @@ cat > "$PROJECT_FILE" << ENDPROJ
 		1234567890ABCDE3 = {
 			isa = PBXGroup;
 			children = (
+				1234567890SWIFT0 /* ${WRAPPER_FRAMEWORK}.swift */,
 				1234567890ABCDE4 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -171,6 +174,7 @@ cat > "$PROJECT_FILE" << ENDPROJ
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				1234567890SWIFT1 /* ${WRAPPER_FRAMEWORK}.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -413,7 +417,15 @@ cat > "$PROJECT_FILE" << ENDPROJ
 }
 ENDPROJ
 
-# 3) Create scheme for the framework
+# 3) Create Swift source file that re-exports the package
+echo "==> Creating Swift source file"
+mkdir -p "${WRAPPER_FRAMEWORK}"
+cat > "${WRAPPER_FRAMEWORK}/${WRAPPER_FRAMEWORK}.swift" << ENDSWIFT
+// Re-export the ${PRODUCT} module
+@_exported import ${PRODUCT}
+ENDSWIFT
+
+# 4) Create scheme for the framework
 echo "==> Creating build scheme"
 mkdir -p "${WRAPPER_PROJECT}.xcodeproj/xcshareddata/xcschemes"
 cat > "${WRAPPER_PROJECT}.xcodeproj/xcshareddata/xcschemes/${WRAPPER_FRAMEWORK}.xcscheme" << ENDSCHEME
@@ -517,6 +529,7 @@ xcodebuild -create-xcframework \
 # 6) Clean up
 echo "==> Cleaning up"
 rm -rf "${WRAPPER_PROJECT}.xcodeproj"
+rm -rf "${WRAPPER_FRAMEWORK}"
 rm -rf "${OUT_DIR}"/*.xcarchive
 
 # 7) Verify XCFramework
