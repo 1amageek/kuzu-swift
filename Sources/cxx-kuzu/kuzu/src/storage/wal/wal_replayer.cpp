@@ -53,6 +53,9 @@ void WALReplayer::replay() const {
         checkpointer.readCheckpoint();
         return;
     }
+    // A previous unclean exit may have left non-durable contents in the WAL, so before we start
+    // replaying the WAL records, make a best-effort attempt at ensuring the WAL is fully durable.
+    fileInfo->syncFile();
     // Start replaying the WAL records.
     try {
         // First, we dry run the replay to find out the offset of the last record that was
@@ -423,7 +426,8 @@ void WALReplayer::replayRelDetachDeletionRecord(const WALRecord& walRecord) cons
     relIDVector->setState(anchorState);
     const auto deleteState = std::make_unique<RelTableDeleteState>(
         *deletionRecord.ownedSrcNodeIDVector, *dstNodeIDVector, *relIDVector);
-    table.detachDelete(clientContext.getTransaction(), deletionRecord.direction, deleteState.get());
+    deleteState->detachDeleteDirection = deletionRecord.direction;
+    table.detachDelete(clientContext.getTransaction(), deleteState.get());
 }
 
 void WALReplayer::replayRelUpdateRecord(const WALRecord& walRecord) const {
