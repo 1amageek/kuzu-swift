@@ -2,12 +2,6 @@
 // The swift-tools-version declares the minimum version of Swift required to build this package.
 
 import PackageDescription
-import Foundation
-
-// Development option: Use KUZU_USE_BINARY=1 to test binary distribution locally
-let useBinaryDistribution = ProcessInfo.processInfo.environment["KUZU_USE_BINARY"] != nil
-let binaryURL = ProcessInfo.processInfo.environment["KUZU_BINARY_URL"] ?? "https://github.com/1amageek/kuzu-swift/releases/download/v0.11.1/Kuzu.xcframework.zip"
-let binaryChecksum = ProcessInfo.processInfo.environment["KUZU_BINARY_CHECKSUM"] ?? "b13968dea0cc5c97e6e7ab7d500a4a8ddc7ddb420b36e25f28eb2bf0de49c1f9"
 
 let package = Package(
     name: "kuzu-swift",
@@ -24,25 +18,9 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/apple/swift-docc-plugin", branch: "1.4.5"),
     ],
-    targets: useBinaryDistribution ? [
-        // Binary distribution target
-        .binaryTarget(
-            name: "Kuzu",
-            url: binaryURL,
-            checksum: binaryChecksum
-        ),
-        .testTarget(
-            name: "KuzuTests",
-            dependencies: ["Kuzu"],
-            resources: [
-                .copy("Dataset")
-            ],
-            linkerSettings: [
-                .linkedLibrary("atomic", .when(platforms: [.linux]))
-            ]
-        )
-    ] : [
-        // Source distribution targets
+    targets: [
+        // Targets are the basic building blocks of a package, defining a module or a test suite.
+        // Targets can depend on other targets in this package and products from dependencies.
         .target(
             name: "Kuzu",
             dependencies: ["cxx-kuzu"]
@@ -144,6 +122,7 @@ let package = Package(
                 "kuzu/src/binder/bind/bind_explain.cpp",
                 "kuzu/src/binder/bind/bind_export_database.cpp",
                 "kuzu/src/binder/bind/bind_extension.cpp",
+                "kuzu/src/binder/bind/bind_extension_clause.cpp",
                 "kuzu/src/binder/bind/bind_file_scan.cpp",
                 "kuzu/src/binder/bind/bind_graph_pattern.cpp",
                 "kuzu/src/binder/bind/bind_import_database.cpp",
@@ -486,6 +465,7 @@ let package = Package(
                 "kuzu/src/main/db_config.cpp",
                 "kuzu/src/main/plan_printer.cpp",
                 "kuzu/src/main/prepared_statement.cpp",
+                "kuzu/src/main/prepared_statement_manager.cpp",
                 "kuzu/src/main/query_result.cpp",
                 "kuzu/src/main/query_summary.cpp",
                 "kuzu/src/main/settings.cpp",
@@ -1151,6 +1131,7 @@ let package = Package(
                 .headerSearchPath("kuzu/third_party/zstd/include"),
                 .define("ANTLR4CPP_STATIC"),
                 .define("BM_MALLOC"),
+                .define("HAS_FULLFSYNC"),
                 .define("KUZU_CMAKE_VERSION", to: "\"0.11.1\""),
                 .define("KUZU_EXPORTS"),
                 .define("KUZU_EXTENSION_VERSION", to: "\"0.11.1\""),

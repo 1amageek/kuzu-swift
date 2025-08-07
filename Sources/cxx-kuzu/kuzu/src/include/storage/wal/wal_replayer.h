@@ -45,6 +45,10 @@ private:
     void removeWALAndShadowFiles() const;
     void removeFileIfExists(const std::string& path) const;
 
+    std::unique_ptr<common::FileInfo> openWALFile() const;
+    void syncWALFile(const common::FileInfo& fileInfo) const;
+    void truncateWALFile(common::FileInfo& fileInfo, uint64_t size) const;
+
 private:
     main::ClientContext& clientContext;
     std::string walPath;
