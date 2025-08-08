@@ -44,8 +44,7 @@ void WALReplayer::replay() const {
         return;
     }
     // If the WAL file exists, we need to replay it.
-    auto fileInfo =
-        clientContext.getVFSUnsafe()->openFile(walPath, FileOpenFlags(FileFlags::READ_ONLY));
+    auto fileInfo = openWALFile();
     // Check if the wal file is empty. If so, we do not need to replay anything.
     if (fileInfo->getFileSize() == 0) {
         removeWALAndShadowFiles();
@@ -53,6 +52,9 @@ void WALReplayer::replay() const {
         checkpointer.readCheckpoint();
         return;
     }
+    // A previous unclean exit may have left non-durable contents in the WAL, so before we start
+    // replaying the WAL records, make a best-effort attempt at ensuring the WAL is fully durable.
+    syncWALFile(*fileInfo);
     // Start replaying the WAL records.
     try {
         // First, we dry run the replay to find out the offset of the last record that was
@@ -77,6 +79,9 @@ void WALReplayer::replay() const {
                 auto walRecord = WALRecord::deserialize(deserializer, clientContext);
                 replayWALRecord(*walRecord);
             }
+            // After replaying all the records, we should truncate the WAL file to the last
+            // COMMIT/CHECKPOINT record.
+            truncateWALFile(*fileInfo, offsetDeserialized);
         }
     } catch (const std::exception&) {
         if (clientContext.getTransactionContext()->hasActiveTransaction()) {
@@ -423,7 +428,8 @@ void WALReplayer::replayRelDetachDeletionRecord(const WALRecord& walRecord) cons
     relIDVector->setState(anchorState);
     const auto deleteState = std::make_unique<RelTableDeleteState>(
         *deletionRecord.ownedSrcNodeIDVector, *dstNodeIDVector, *relIDVector);
-    table.detachDelete(clientContext.getTransaction(), deletionRecord.direction, deleteState.get());
+    deleteState->detachDeleteDirection = deletionRecord.direction;
+    table.detachDelete(clientContext.getTransaction(), deleteState.get());
 }
 
 void WALReplayer::replayRelUpdateRecord(const WALRecord& walRecord) const {
@@ -471,6 +477,32 @@ void WALReplayer::removeFileIfExists(const std::string& path) const {
     auto vfs = clientContext.getVFSUnsafe();
     if (vfs->fileOrPathExists(path, &clientContext)) {
         vfs->removeFileIfExists(path);
+    }
+}
+
+std::unique_ptr<FileInfo> WALReplayer::openWALFile() const {
+    auto flag = FileFlags::READ_ONLY;
+    if (!clientContext.getStorageManager()->isReadOnly()) {
+        flag |= FileFlags::WRITE; // The write flag here is to ensure the file is opened with O_RDWR
+                                  // so that we can sync it.
+    }
+    return clientContext.getVFSUnsafe()->openFile(walPath, FileOpenFlags(flag));
+}
+
+void WALReplayer::syncWALFile(const FileInfo& fileInfo) const {
+    if (clientContext.getStorageManager()->isReadOnly()) {
+        return;
+    }
+    fileInfo.syncFile();
+}
+
+void WALReplayer::truncateWALFile(FileInfo& fileInfo, uint64_t size) const {
+    if (clientContext.getStorageManager()->isReadOnly()) {
+        return;
+    }
+    if (fileInfo.getFileSize() > size) {
+        fileInfo.truncate(size);
+        fileInfo.syncFile();
     }
 }
 
