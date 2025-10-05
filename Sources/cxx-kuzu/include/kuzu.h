@@ -349,6 +349,66 @@ KUZU_C_API void kuzu_database_destroy(kuzu_database* database);
 
 KUZU_C_API kuzu_system_config kuzu_default_system_config();
 
+// Vector Index Loading
+/**
+ * @brief Callback function type for vector index loading completion.
+ *
+ * This callback is invoked when background HNSW index loading completes.
+ * It will NOT be called if the Database is destroyed before loading completes.
+ *
+ * @param user_data Opaque user data pointer provided during registration.
+ * @param success true if all indexes loaded successfully, false on error.
+ * @param error_message Error description if failed, NULL if succeeded.
+ *
+ * @note The error_message pointer is only valid during the callback execution.
+ *       If you need to store the error message, make a copy of the string.
+ * @note Callback is invoked on the background loading thread, not main thread.
+ */
+typedef void (*kuzu_vector_index_load_callback)(
+    void* user_data,
+    bool success,
+    const char* error_message
+);
+
+/**
+ * @brief Register callback for vector index loading completion.
+ *
+ * If vector indexes are already loaded when called, the callback
+ * will be invoked immediately on the calling thread.
+ *
+ * @param database The database instance.
+ * @param callback Function to call on completion (NULL to unregister).
+ * @param user_data Opaque pointer passed to callback.
+ *
+ * @note Thread-safe: Can be called from any thread.
+ * @note Only one callback can be registered at a time (last one wins).
+ */
+KUZU_C_API void kuzu_database_set_vector_index_load_callback(
+    kuzu_database* database,
+    kuzu_vector_index_load_callback callback,
+    void* user_data
+);
+
+/**
+ * @brief Check if vector indexes have finished loading.
+ *
+ * @param database The database instance.
+ * @return true if loading completed (success or failure), false if still loading.
+ *
+ * @note Thread-safe.
+ */
+KUZU_C_API bool kuzu_database_is_vector_indexes_loaded(kuzu_database* database);
+
+/**
+ * @brief Check if vector indexes are ready for use.
+ *
+ * @param database The database instance.
+ * @return true if loaded successfully and ready for queries.
+ *
+ * @note Thread-safe.
+ */
+KUZU_C_API bool kuzu_database_is_vector_indexes_ready(kuzu_database* database);
+
 // Connection
 /**
  * @brief Allocates memory and creates a connection to the database. Caller is responsible for

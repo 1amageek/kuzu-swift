@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -29,6 +30,10 @@ class MapperExtension;
 namespace storage {
 class StorageExtension;
 } // namespace storage
+
+namespace vector_extension {
+class VectorExtension;
+} // namespace vector_extension
 
 namespace main {
 class DatabaseManager;
@@ -90,6 +95,28 @@ struct KUZU_API SystemConfig {
 };
 
 /**
+ * @brief Callback function type for vector index loading completion
+ *
+ * This callback is invoked when background HNSW index loading completes.
+ * It will NOT be called if the Database is destroyed before loading completes.
+ *
+ * @param userData Opaque user data pointer provided during registration
+ * @param success true if all indexes loaded successfully, false on error
+ * @param errorMessage Error description if failed, nullptr if succeeded
+ *
+ * @warning The errorMessage pointer is only valid during the callback execution.
+ *          If you need to store the error message, make a copy of the string.
+ *
+ * @note Callback is invoked on the background loading thread, not main thread
+ * @note Callback may be invoked immediately if indexes are already loaded
+ */
+typedef void (*VectorIndexLoadCompletionCallback)(
+    void* userData,
+    bool success,
+    const char* errorMessage
+);
+
+/**
  * @brief Database class is the main class of Kuzu. It manages all database components.
  */
 class Database {
@@ -97,6 +124,7 @@ class Database {
     friend class ClientContext;
     friend class Connection;
     friend class testing::BaseGraphTest;
+    friend class vector_extension::VectorExtension;
 
 public:
     /**
@@ -161,6 +189,54 @@ public:
 
     common::VirtualFileSystem* getVFS() { return vfs.get(); }
 
+    /**
+     * @brief Register callback for vector index loading completion
+     *
+     * If vector indexes are already loaded when called, the callback
+     * will be invoked immediately on the calling thread.
+     *
+     * @param callback Function to call on completion (nullptr to unregister)
+     * @param userData Opaque pointer passed to callback
+     *
+     * @note Thread-safe: Can be called from any thread
+     * @note Only one callback can be registered at a time (last one wins)
+     */
+    KUZU_API void setVectorIndexLoadCallback(
+        VectorIndexLoadCompletionCallback callback,
+        void* userData
+    );
+
+    /**
+     * @brief Check if vector indexes have finished loading
+     *
+     * @return true if loading completed (success or failure), false if still loading
+     *
+     * @note Thread-safe
+     */
+    KUZU_API bool isVectorIndexesLoaded() const {
+        return vectorIndexesLoaded.load(std::memory_order_acquire);
+    }
+
+    /**
+     * @brief Check if vector indexes are ready for use
+     *
+     * @return true if loaded successfully and ready for queries
+     *
+     * @note Thread-safe
+     */
+    KUZU_API bool isVectorIndexesReady() const {
+        return vectorIndexesLoaded.load(std::memory_order_acquire) &&
+               vectorIndexesLoadSuccess.load(std::memory_order_acquire);
+    }
+
+    // Internal method for VectorExtension to notify loading completion
+    void notifyVectorIndexLoadComplete(bool success, const std::string& errorMsg = "");
+
+    // Public members for background loading coordination (thread-safe by design)
+    std::atomic<bool> vectorIndexLoadCancelled{false};
+    std::mutex backgroundThreadStartMutex;
+    std::shared_ptr<common::DatabaseLifeCycleManager> dbLifeCycleManager;
+
 private:
     using construct_bm_func_t =
         std::function<std::unique_ptr<storage::BufferManager>(const Database&)>;
@@ -193,11 +269,20 @@ private:
     std::unique_ptr<DatabaseManager> databaseManager;
     std::unique_ptr<extension::ExtensionManager> extensionManager;
     QueryIDGenerator queryIDGenerator;
-    std::shared_ptr<common::DatabaseLifeCycleManager> dbLifeCycleManager;
     std::vector<std::unique_ptr<extension::TransformerExtension>> transformerExtensions;
     std::vector<std::unique_ptr<extension::BinderExtension>> binderExtensions;
     std::vector<std::unique_ptr<extension::PlannerExtension>> plannerExtensions;
     std::vector<std::unique_ptr<extension::MapperExtension>> mapperExtensions;
+
+    // Vector index loading state (private)
+    std::atomic<bool> vectorIndexesLoaded{false};
+    std::atomic<bool> vectorIndexesLoadSuccess{false};
+    std::mutex vectorIndexCallbackMutex;
+
+    // Callback state
+    VectorIndexLoadCompletionCallback vectorIndexCallback = nullptr;
+    void* vectorIndexCallbackUserData = nullptr;
+    std::string vectorIndexLoadErrorMessage;
 };
 
 } // namespace main

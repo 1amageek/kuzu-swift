@@ -23,6 +23,8 @@ public enum KuzuError: Error {
     case getNextQueryResultFailed(String)
     /// Failed to get a value with the given error message.
     case getValueFailed(String)
+    /// Vector index loading failed with the given error message.
+    case vectorIndexLoadFailed(String)
     /// The error message.
     /// - Returns: The error message.
     public var message: String {
@@ -34,7 +36,8 @@ public enum KuzuError: Error {
             .valueConversionFailed(let msg),
             .getFlatTupleFailed(let msg),
             .getNextQueryResultFailed(let msg),
-            .getValueFailed(let msg):
+            .getValueFailed(let msg),
+            .vectorIndexLoadFailed(let msg):
             return msg
         }
     }

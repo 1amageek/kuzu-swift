@@ -47,3 +47,59 @@ kuzu_system_config kuzu_default_system_config() {
 #endif
     return cSystemConfig;
 }
+
+// Vector Index Loading API
+void kuzu_database_set_vector_index_load_callback(
+    kuzu_database* database,
+    kuzu_vector_index_load_callback callback,
+    void* user_data
+) {
+    if (database == nullptr || database->_database == nullptr) {
+        return;
+    }
+
+    auto* db = static_cast<Database*>(database->_database);
+
+    if (callback == nullptr) {
+        // Unregister callback
+        db->setVectorIndexLoadCallback(nullptr, nullptr);
+    } else {
+        // Register callback with lambda bridge
+        // We need to store both the callback function and user_data
+        struct CallbackContext {
+            kuzu_vector_index_load_callback callback;
+            void* userData;
+        };
+
+        auto* context = new CallbackContext{callback, user_data};
+
+        db->setVectorIndexLoadCallback(
+            [](void* contextPtr, bool success, const char* errorMessage) {
+                auto* ctx = static_cast<CallbackContext*>(contextPtr);
+                if (ctx && ctx->callback) {
+                    ctx->callback(ctx->userData, success, errorMessage);
+                }
+                delete ctx;  // Clean up after callback
+            },
+            context
+        );
+    }
+}
+
+bool kuzu_database_is_vector_indexes_loaded(kuzu_database* database) {
+    if (database == nullptr || database->_database == nullptr) {
+        return false;
+    }
+
+    auto* db = static_cast<Database*>(database->_database);
+    return db->isVectorIndexesLoaded();
+}
+
+bool kuzu_database_is_vector_indexes_ready(kuzu_database* database) {
+    if (database == nullptr || database->_database == nullptr) {
+        return false;
+    }
+
+    auto* db = static_cast<Database*>(database->_database);
+    return db->isVectorIndexesReady();
+}

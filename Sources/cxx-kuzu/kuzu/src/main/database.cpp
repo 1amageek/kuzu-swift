@@ -207,6 +207,19 @@ Database::~Database() {
     fprintf(stderr, "[KUZU DEBUG] ========== Database destructor called ==========\n");
     fflush(stderr);
 
+    // Cancel background vector index loading (CRITICAL SECTION)
+    // This mutex prevents TOCTOU race with background thread
+    {
+        std::lock_guard<std::mutex> lock(backgroundThreadStartMutex);
+
+        fprintf(stderr, "[KUZU DEBUG] Setting cancellation flags\n");
+        fflush(stderr);
+
+        vectorIndexLoadCancelled.store(true, std::memory_order_release);
+        dbLifeCycleManager->isDatabaseClosed = true;
+    }
+    // Lock released: Background thread can now proceed to exit
+
     if (!dbConfig.readOnly && dbConfig.forceCheckpointOnClose) {
         fprintf(stderr, "[KUZU DEBUG] Attempting checkpoint on close...\n");
         fflush(stderr);
@@ -233,11 +246,67 @@ Database::~Database() {
         fflush(stderr);
     }
 
-    fprintf(stderr, "[KUZU DEBUG] Setting isDatabaseClosed = true\n");
-    fflush(stderr);
-    dbLifeCycleManager->isDatabaseClosed = true;
     fprintf(stderr, "[KUZU DEBUG] ========== Database destructor finished ==========\n");
     fflush(stderr);
+}
+
+void Database::setVectorIndexLoadCallback(
+    VectorIndexLoadCompletionCallback callback,
+    void* userData
+) {
+    std::lock_guard<std::mutex> lock(vectorIndexCallbackMutex);
+    vectorIndexCallback = callback;
+    vectorIndexCallbackUserData = userData;
+
+    // Already loaded? Invoke immediately on calling thread
+    if (vectorIndexesLoaded.load(std::memory_order_acquire)) {
+        if (callback) {
+            bool success = vectorIndexesLoadSuccess.load(std::memory_order_acquire);
+            const char* errMsg = success ? nullptr : vectorIndexLoadErrorMessage.c_str();
+
+            fprintf(stderr, "[KUZU DEBUG] Invoking callback immediately (already loaded)\n");
+            fflush(stderr);
+
+            callback(userData, success, errMsg);
+        }
+    }
+}
+
+void Database::notifyVectorIndexLoadComplete(bool success, const std::string& errorMsg) {
+    // V3 FIX: Check vectorIndexLoadCancelled (atomic), not isDatabaseClosed
+    if (vectorIndexLoadCancelled.load(std::memory_order_acquire)) {
+        fprintf(stderr, "[KUZU DEBUG] Loading cancelled, skipping callback notification\n");
+        fflush(stderr);
+        return;
+    }
+
+    fprintf(stderr, "[KUZU DEBUG] Vector index loading %s\n",
+            success ? "succeeded" : "failed");
+    if (!success && !errorMsg.empty()) {
+        fprintf(stderr, "[KUZU DEBUG]   Error: %s\n", errorMsg.c_str());
+    }
+    fflush(stderr);
+
+    // Store result
+    vectorIndexesLoadSuccess.store(success, std::memory_order_release);
+    if (!success) {
+        vectorIndexLoadErrorMessage = errorMsg;  // Copy for lifetime safety
+    }
+    vectorIndexesLoaded.store(true, std::memory_order_release);
+
+    // Invoke callback
+    std::lock_guard<std::mutex> lock(vectorIndexCallbackMutex);
+    if (vectorIndexCallback) {
+        const char* errMsgPtr = success ? nullptr : vectorIndexLoadErrorMessage.c_str();
+
+        fprintf(stderr, "[KUZU DEBUG] Invoking callback on background thread\n");
+        fflush(stderr);
+
+        vectorIndexCallback(vectorIndexCallbackUserData, success, errMsgPtr);
+
+        fprintf(stderr, "[KUZU DEBUG] Callback completed\n");
+        fflush(stderr);
+    }
 }
 
 // NOLINTNEXTLINE(readability-make-member-function-const): Semantically non-const function.
