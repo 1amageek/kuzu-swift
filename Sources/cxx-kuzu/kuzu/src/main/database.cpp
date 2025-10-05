@@ -9,6 +9,8 @@
 #include "main/database_manager.h"
 #include "storage/buffer_manager/buffer_manager.h"
 
+#include <iostream>
+
 #if defined(_WIN32)
 #include <windows.h>
 #else
@@ -89,7 +91,18 @@ Database::Database(std::string_view databasePath, SystemConfig systemConfig)
 Database::Database(std::string_view databasePath, SystemConfig systemConfig,
     construct_bm_func_t constructBMFunc)
     : dbConfig(systemConfig) {
+    fprintf(stderr, "[KUZU DEBUG] Database constructor called\n");
+    fprintf(stderr, "[KUZU DEBUG]   Path: %s\n", std::string(databasePath).c_str());
+    fprintf(stderr, "[KUZU DEBUG]   readOnly: %d\n", systemConfig.readOnly);
+    fprintf(stderr, "[KUZU DEBUG]   autoCheckpoint: %d\n", systemConfig.autoCheckpoint);
+    fprintf(stderr, "[KUZU DEBUG]   checkpointThreshold: %llu\n", systemConfig.checkpointThreshold);
+    fprintf(stderr, "[KUZU DEBUG]   forceCheckpointOnClose: %d\n", systemConfig.forceCheckpointOnClose);
+    fflush(stderr);
+
     initMembers(databasePath, constructBMFunc);
+
+    fprintf(stderr, "[KUZU DEBUG] Database initialized successfully\n");
+    fflush(stderr);
 }
 
 std::unique_ptr<BufferManager> Database::initBufferManager(const Database& db) {
@@ -99,52 +112,132 @@ std::unique_ptr<BufferManager> Database::initBufferManager(const Database& db) {
 }
 
 void Database::initMembers(std::string_view dbPath, construct_bm_func_t initBmFunc) {
+    fprintf(stderr, "[KUZU DEBUG] initMembers() START\n");
+    fflush(stderr);
+
     // To expand a path with home directory(~), we have to pass in a dummy clientContext which
     // handles the home directory expansion.
     const auto dbPathStr = std::string(dbPath);
     auto clientContext = ClientContext(this);
     databasePath = StorageUtils::expandPath(&clientContext, dbPathStr);
 
+    fprintf(stderr, "[KUZU DEBUG] initMembers() - expanded path: %s\n", databasePath.c_str());
+    fprintf(stderr, "[KUZU DEBUG] initMembers() - checking if path exists...\n");
+    fflush(stderr);
+
+    bool pathExists = std::filesystem::exists(databasePath);
+    bool isDirectory = pathExists && std::filesystem::is_directory(databasePath);
+    bool isFile = pathExists && std::filesystem::is_regular_file(databasePath);
+
+    fprintf(stderr, "[KUZU DEBUG] initMembers() - exists=%d, isDirectory=%d, isFile=%d\n",
+        pathExists, isDirectory, isFile);
+    fflush(stderr);
+
     if (std::filesystem::is_directory(databasePath)) {
         throw RuntimeException("Database path cannot be a directory: " + databasePath);
     }
+
+    fprintf(stderr, "[KUZU DEBUG] initMembers() - creating VirtualFileSystem...\n");
+    fflush(stderr);
     vfs = std::make_unique<VirtualFileSystem>(databasePath);
+
+    fprintf(stderr, "[KUZU DEBUG] initMembers() - validating path in read-only mode...\n");
+    fflush(stderr);
     validatePathInReadOnly();
 
+    fprintf(stderr, "[KUZU DEBUG] initMembers() - creating BufferManager...\n");
+    fflush(stderr);
     bufferManager = initBmFunc(*this);
+
+    fprintf(stderr, "[KUZU DEBUG] initMembers() - creating MemoryManager...\n");
+    fflush(stderr);
     memoryManager = std::make_unique<MemoryManager>(bufferManager.get(), vfs.get());
+
 #if defined(__APPLE__)
+    fprintf(stderr, "[KUZU DEBUG] initMembers() - creating QueryProcessor (Apple)...\n");
+    fflush(stderr);
     queryProcessor =
         std::make_unique<processor::QueryProcessor>(dbConfig.maxNumThreads, dbConfig.threadQos);
 #else
+    fprintf(stderr, "[KUZU DEBUG] initMembers() - creating QueryProcessor...\n");
+    fflush(stderr);
     queryProcessor = std::make_unique<processor::QueryProcessor>(dbConfig.maxNumThreads);
 #endif
 
+    fprintf(stderr, "[KUZU DEBUG] initMembers() - creating Catalog...\n");
+    fflush(stderr);
     catalog = std::make_unique<Catalog>();
+
+    fprintf(stderr, "[KUZU DEBUG] initMembers() - creating StorageManager...\n");
+    fflush(stderr);
     storageManager = std::make_unique<StorageManager>(databasePath, dbConfig.readOnly,
         dbConfig.enableChecksums, *memoryManager, dbConfig.enableCompression, vfs.get());
+
+    fprintf(stderr, "[KUZU DEBUG] initMembers() - creating TransactionManager...\n");
+    fflush(stderr);
     transactionManager = std::make_unique<TransactionManager>(storageManager->getWAL());
+
+    fprintf(stderr, "[KUZU DEBUG] initMembers() - creating DatabaseManager...\n");
+    fflush(stderr);
     databaseManager = std::make_unique<DatabaseManager>();
 
+    fprintf(stderr, "[KUZU DEBUG] initMembers() - creating ExtensionManager...\n");
+    fflush(stderr);
     extensionManager = std::make_unique<extension::ExtensionManager>();
     dbLifeCycleManager = std::make_shared<DatabaseLifeCycleManager>();
+
     if (clientContext.isInMemory()) {
+        fprintf(stderr, "[KUZU DEBUG] initMembers() - in-memory mode, initializing data file handle...\n");
+        fflush(stderr);
         storageManager->initDataFileHandle(vfs.get(), &clientContext);
         extensionManager->autoLoadLinkedExtensions(&clientContext);
         return;
     }
+
+    fprintf(stderr, "[KUZU DEBUG] initMembers() - calling StorageManager::recover()...\n");
+    fflush(stderr);
     StorageManager::recover(clientContext, dbConfig.throwOnWalReplayFailure,
         dbConfig.enableChecksums);
+
+    fprintf(stderr, "[KUZU DEBUG] initMembers() COMPLETE\n");
+    fflush(stderr);
 }
 
 Database::~Database() {
+    fprintf(stderr, "[KUZU DEBUG] ========== Database destructor called ==========\n");
+    fflush(stderr);
+
     if (!dbConfig.readOnly && dbConfig.forceCheckpointOnClose) {
+        fprintf(stderr, "[KUZU DEBUG] Attempting checkpoint on close...\n");
+        fflush(stderr);
         try {
             ClientContext clientContext(this);
+            fprintf(stderr, "[KUZU DEBUG] ClientContext created, calling checkpoint...\n");
+            fflush(stderr);
             transactionManager->checkpoint(clientContext);
-        } catch (...) {} // NOLINT
+            fprintf(stderr, "[KUZU DEBUG] Checkpoint on close succeeded\n");
+            fflush(stderr);
+        } catch (Exception& e) {
+            fprintf(stderr, "[KUZU ERROR] Checkpoint on close failed: %s\n", e.what());
+            fflush(stderr);
+        } catch (std::exception& e) {
+            fprintf(stderr, "[KUZU ERROR] Checkpoint on close failed (std::exception): %s\n", e.what());
+            fflush(stderr);
+        } catch (...) {
+            fprintf(stderr, "[KUZU ERROR] Checkpoint on close failed: Unknown exception\n");
+            fflush(stderr);
+        }
+    } else {
+        fprintf(stderr, "[KUZU DEBUG] Checkpoint skipped (readOnly=%d, forceCheckpointOnClose=%d)\n",
+                dbConfig.readOnly, dbConfig.forceCheckpointOnClose);
+        fflush(stderr);
     }
+
+    fprintf(stderr, "[KUZU DEBUG] Setting isDatabaseClosed = true\n");
+    fflush(stderr);
     dbLifeCycleManager->isDatabaseClosed = true;
+    fprintf(stderr, "[KUZU DEBUG] ========== Database destructor finished ==========\n");
+    fflush(stderr);
 }
 
 // NOLINTNEXTLINE(readability-make-member-function-const): Semantically non-const function.

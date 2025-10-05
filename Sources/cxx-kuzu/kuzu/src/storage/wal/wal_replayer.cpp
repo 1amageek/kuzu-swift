@@ -82,22 +82,47 @@ static uint64_t getReadOffset(Deserializer& deSer, bool enableChecksums) {
 }
 
 void WALReplayer::replay(bool throwOnWalReplayFailure, bool enableChecksums) const {
+    fprintf(stderr, "[KUZU DEBUG] WALReplayer::replay() START\n");
+    fflush(stderr);
+
     auto vfs = VirtualFileSystem::GetUnsafe(clientContext);
     Checkpointer checkpointer(clientContext);
+
     // First, check if the WAL file exists. If it does not, we can safely remove the shadow file.
+    fprintf(stderr, "[KUZU DEBUG] WALReplayer: checking if WAL file exists: %s\n", walPath.c_str());
+    fflush(stderr);
+
     if (!vfs->fileOrPathExists(walPath, &clientContext)) {
+        fprintf(stderr, "[KUZU DEBUG] WALReplayer: WAL file does not exist, removing shadow file\n");
+        fflush(stderr);
         removeFileIfExists(shadowFilePath);
         // Read the checkpointed data from the disk.
+        fprintf(stderr, "[KUZU DEBUG] WALReplayer: calling readCheckpoint() [no WAL case]\n");
+        fflush(stderr);
         checkpointer.readCheckpoint();
+        fprintf(stderr, "[KUZU DEBUG] WALReplayer: readCheckpoint() complete [no WAL case]\n");
+        fflush(stderr);
         return;
     }
     // If the WAL file exists, we need to replay it.
+    fprintf(stderr, "[KUZU DEBUG] WALReplayer: WAL file exists, opening it\n");
+    fflush(stderr);
     auto fileInfo = openWALFile();
+
     // Check if the wal file is empty. If so, we do not need to replay anything.
+    fprintf(stderr, "[KUZU DEBUG] WALReplayer: WAL file size = %llu\n", fileInfo->getFileSize());
+    fflush(stderr);
+
     if (fileInfo->getFileSize() == 0) {
+        fprintf(stderr, "[KUZU DEBUG] WALReplayer: WAL file is empty, removing WAL and shadow files\n");
+        fflush(stderr);
         removeWALAndShadowFiles();
         // Read the checkpointed data from the disk.
+        fprintf(stderr, "[KUZU DEBUG] WALReplayer: calling readCheckpoint() [empty WAL case]\n");
+        fflush(stderr);
         checkpointer.readCheckpoint();
+        fprintf(stderr, "[KUZU DEBUG] WALReplayer: readCheckpoint() complete [empty WAL case]\n");
+        fflush(stderr);
         return;
     }
     // A previous unclean exit may have left non-durable contents in the WAL, so before we start
@@ -108,19 +133,39 @@ void WALReplayer::replay(bool throwOnWalReplayFailure, bool enableChecksums) con
     try {
         // First, we dry run the replay to find out the offset of the last record that was
         // CHECKPOINT or COMMIT.
+        fprintf(stderr, "[KUZU DEBUG] WALReplayer: starting dryReplay()\n");
+        fflush(stderr);
         auto [offsetDeserialized, isLastRecordCheckpoint] =
             dryReplay(*fileInfo, throwOnWalReplayFailure, enableChecksums);
+        fprintf(stderr, "[KUZU DEBUG] WALReplayer: dryReplay complete - isLastRecordCheckpoint=%d, offset=%llu\n",
+            isLastRecordCheckpoint, offsetDeserialized);
+        fflush(stderr);
+
         if (isLastRecordCheckpoint) {
             // If the last record is a checkpoint, we resume by replaying the shadow file.
+            fprintf(stderr, "[KUZU DEBUG] WALReplayer: last record is CHECKPOINT, replaying shadow file\n");
+            fflush(stderr);
             ShadowFile::replayShadowPageRecords(clientContext);
+            fprintf(stderr, "[KUZU DEBUG] WALReplayer: shadow file replayed, removing WAL and shadow files\n");
+            fflush(stderr);
             removeWALAndShadowFiles();
             // Re-read checkpointed data from disk again as now the shadow file is applied.
+            fprintf(stderr, "[KUZU DEBUG] WALReplayer: calling readCheckpoint() [checkpoint record case]\n");
+            fflush(stderr);
             checkpointer.readCheckpoint();
+            fprintf(stderr, "[KUZU DEBUG] WALReplayer: readCheckpoint() complete [checkpoint record case]\n");
+            fflush(stderr);
         } else {
             // There is no checkpoint record, so we should remove the shadow file if it exists.
+            fprintf(stderr, "[KUZU DEBUG] WALReplayer: no checkpoint record, removing shadow file\n");
+            fflush(stderr);
             removeFileIfExists(shadowFilePath);
             // Read the checkpointed data from the disk.
+            fprintf(stderr, "[KUZU DEBUG] WALReplayer: calling readCheckpoint() [no checkpoint record case]\n");
+            fflush(stderr);
             checkpointer.readCheckpoint();
+            fprintf(stderr, "[KUZU DEBUG] WALReplayer: readCheckpoint() complete [no checkpoint record case]\n");
+            fflush(stderr);
             // Resume by replaying the WAL file from the beginning until the last COMMIT record.
             Deserializer deserializer = initDeserializer(*fileInfo, clientContext, enableChecksums);
 

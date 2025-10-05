@@ -476,8 +476,17 @@ PrimaryKeyIndex::PrimaryKeyIndex(IndexInfo indexInfo, std::unique_ptr<IndexStora
     bool inMemMode, MemoryManager& memoryManager, PageAllocator& pageAllocator,
     ShadowFile* shadowFile)
     : Index{std::move(indexInfo), std::move(storageInfo)}, shadowFile{*shadowFile} {
+    fprintf(stderr, "[KUZU DEBUG] PrimaryKeyIndex::PrimaryKeyIndex() START\n");
+    fflush(stderr);
+
     auto& hashIndexStorageInfo = this->storageInfo->cast<PrimaryKeyIndexStorageInfo>();
+    fprintf(stderr, "[KUZU DEBUG] PrimaryKeyIndex: firstHeaderPage=%u, overflowHeaderPage=%u\n",
+        hashIndexStorageInfo.firstHeaderPage, hashIndexStorageInfo.overflowHeaderPage);
+    fflush(stderr);
+
     if (hashIndexStorageInfo.firstHeaderPage == INVALID_PAGE_IDX) {
+        fprintf(stderr, "[KUZU DEBUG] PrimaryKeyIndex: firstHeaderPage is INVALID, creating new index\n");
+        fflush(stderr);
         KU_ASSERT(hashIndexStorageInfo.overflowHeaderPage == INVALID_PAGE_IDX);
         hashIndexHeadersForReadTrx.resize(NUM_HASH_INDEXES);
         hashIndexHeadersForWriteTrx.resize(NUM_HASH_INDEXES);
@@ -488,10 +497,17 @@ PrimaryKeyIndex::PrimaryKeyIndex(IndexInfo indexInfo, std::unique_ptr<IndexStora
             hashIndexDiskArrays->addDiskArray();
         }
     } else {
+        fprintf(stderr, "[KUZU DEBUG] PrimaryKeyIndex: reading existing index headers\n");
+        fflush(stderr);
         size_t headerIdx = 0;
         for (size_t headerPageIdx = 0; headerPageIdx < INDEX_HEADER_PAGES; headerPageIdx++) {
+            fprintf(stderr, "[KUZU DEBUG] PrimaryKeyIndex: reading header page %zu (page %u)\n",
+                headerPageIdx, hashIndexStorageInfo.firstHeaderPage + headerPageIdx);
+            fflush(stderr);
             pageAllocator.getDataFH()->optimisticReadPage(
                 hashIndexStorageInfo.firstHeaderPage + headerPageIdx, [&](auto* frame) {
+                    fprintf(stderr, "[KUZU DEBUG] PrimaryKeyIndex: optimisticReadPage callback - frame=%p\n", (void*)frame);
+                    fflush(stderr);
                     const auto onDiskHeaders = reinterpret_cast<HashIndexHeaderOnDisk*>(frame);
                     for (size_t i = 0; i < INDEX_HEADERS_PER_PAGE && headerIdx < NUM_HASH_INDEXES;
                          i++) {
@@ -499,17 +515,30 @@ PrimaryKeyIndex::PrimaryKeyIndex(IndexInfo indexInfo, std::unique_ptr<IndexStora
                         headerIdx++;
                     }
                 });
+            fprintf(stderr, "[KUZU DEBUG] PrimaryKeyIndex: header page %zu read complete, headerIdx=%zu\n",
+                headerPageIdx, headerIdx);
+            fflush(stderr);
         }
+        fprintf(stderr, "[KUZU DEBUG] PrimaryKeyIndex: all header pages read, headerIdx=%zu\n", headerIdx);
+        fflush(stderr);
         hashIndexHeadersForWriteTrx.assign(hashIndexHeadersForReadTrx.begin(),
             hashIndexHeadersForReadTrx.end());
         KU_ASSERT(headerIdx == NUM_HASH_INDEXES);
+        fprintf(stderr, "[KUZU DEBUG] PrimaryKeyIndex: creating DiskArrayCollection\n");
+        fflush(stderr);
         hashIndexDiskArrays = std::make_unique<DiskArrayCollection>(*pageAllocator.getDataFH(),
             *shadowFile,
             hashIndexStorageInfo.firstHeaderPage +
                 INDEX_HEADER_PAGES /*firstHeaderPage for the DAC follows the index header pages*/,
             true /*bypassShadowing*/);
+        fprintf(stderr, "[KUZU DEBUG] PrimaryKeyIndex: DiskArrayCollection created\n");
+        fflush(stderr);
     }
+    fprintf(stderr, "[KUZU DEBUG] PrimaryKeyIndex: calling initOverflowAndSubIndices()\n");
+    fflush(stderr);
     initOverflowAndSubIndices(inMemMode, memoryManager, pageAllocator, hashIndexStorageInfo);
+    fprintf(stderr, "[KUZU DEBUG] PrimaryKeyIndex::PrimaryKeyIndex() COMPLETE\n");
+    fflush(stderr);
 }
 
 void PrimaryKeyIndex::initOverflowAndSubIndices(bool inMemMode, MemoryManager& mm,
@@ -697,9 +726,22 @@ PrimaryKeyIndex::~PrimaryKeyIndex() = default;
 
 std::unique_ptr<Index> PrimaryKeyIndex::load(main::ClientContext* context,
     StorageManager* storageManager, IndexInfo indexInfo, std::span<uint8_t> storageInfoBuffer) {
+    fprintf(stderr, "[KUZU DEBUG] PrimaryKeyIndex::load() START - storageInfoBuffer.size=%zu\n", storageInfoBuffer.size());
+    fflush(stderr);
+
+    fprintf(stderr, "[KUZU DEBUG] PrimaryKeyIndex: creating BufferReader\n");
+    fflush(stderr);
     auto storageInfoBufferReader =
         std::make_unique<BufferReader>(storageInfoBuffer.data(), storageInfoBuffer.size());
+
+    fprintf(stderr, "[KUZU DEBUG] PrimaryKeyIndex: deserializing PrimaryKeyIndexStorageInfo\n");
+    fflush(stderr);
     auto storageInfo = PrimaryKeyIndexStorageInfo::deserialize(std::move(storageInfoBufferReader));
+    fprintf(stderr, "[KUZU DEBUG] PrimaryKeyIndex: storageInfo deserialized\n");
+    fflush(stderr);
+
+    fprintf(stderr, "[KUZU DEBUG] PrimaryKeyIndex: creating PrimaryKeyIndex instance\n");
+    fflush(stderr);
     return std::make_unique<PrimaryKeyIndex>(indexInfo, std::move(storageInfo),
         storageManager->isInMemory(), *MemoryManager::Get(*context),
         *storageManager->getDataFH()->getPageManager(), &storageManager->getShadowFile());

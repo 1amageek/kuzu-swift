@@ -617,6 +617,9 @@ void RelTable::prepareCommitForNodeGroup(const Transaction* transaction,
 bool RelTable::checkpoint(main::ClientContext*, TableCatalogEntry* tableEntry,
     PageAllocator& pageAllocator) {
     bool ret = hasChanges.load(std::memory_order_acquire);
+    fprintf(stderr, "[KUZU DEBUG] RelTable::checkpoint() - hasChanges=%d, directedRelData.size=%zu\n", ret, directedRelData.size());
+    fflush(stderr);
+
     if (ret) {
         // Deleted columns are vacuumed and not checkpointed or serialized.
         std::vector<column_id_t> columnIDs;
@@ -624,9 +627,15 @@ bool RelTable::checkpoint(main::ClientContext*, TableCatalogEntry* tableEntry,
         for (auto& property : tableEntry->getProperties()) {
             columnIDs.push_back(tableEntry->getColumnID(property.getName()));
         }
+        fprintf(stderr, "[KUZU DEBUG] RelTable::checkpoint() - columnIDs.size=%zu, starting directedRelData checkpoints\n", columnIDs.size());
+        fflush(stderr);
+
         for (auto& directedRelData : directedRelData) {
             directedRelData->checkpoint(columnIDs, pageAllocator);
         }
+        fprintf(stderr, "[KUZU DEBUG] RelTable::checkpoint() - all directedRelData checkpoints complete\n");
+        fflush(stderr);
+
         hasChanges.store(false, std::memory_order_release);
     }
     return ret;

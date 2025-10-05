@@ -72,6 +72,25 @@ void Checkpointer::writeCheckpoint() {
     // Checkpoint storage. Note that we first checkpoint storage before serializing the catalog, as
     // checkpointing storage may overwrite columnIDs in the catalog.
     bool hasStorageChanges = checkpointStorage();
+
+    const auto storageManager = StorageManager::Get(clientContext);
+    const auto catalog = catalog::Catalog::Get(clientContext);
+    auto* dataFH = storageManager->getDataFH();
+
+    // Check if there are any changes that require checkpointing
+    bool hasCatalogChanges = databaseHeader.catalogPageRange.startPageIdx == common::INVALID_PAGE_IDX ||
+                             catalog->changedSinceLastCheckpoint();
+    bool hasMetadataChanges = databaseHeader.metadataPageRange.startPageIdx == common::INVALID_PAGE_IDX ||
+                              hasStorageChanges || catalog->changedSinceLastCheckpoint() ||
+                              dataFH->getPageManager()->changedSinceLastCheckpoint();
+
+    // If there are no changes at all, skip the checkpoint entirely
+    if (!hasStorageChanges && !hasCatalogChanges && !hasMetadataChanges) {
+        fprintf(stderr, "[KUZU DEBUG] Checkpointer: No changes detected, skipping checkpoint\n");
+        fflush(stderr);
+        return;
+    }
+
     serializeCatalogAndMetadata(databaseHeader, hasStorageChanges);
     writeDatabaseHeader(databaseHeader);
     logCheckpointAndApplyShadowPages();
@@ -79,7 +98,6 @@ void Checkpointer::writeCheckpoint() {
     // This function will evict all pages that were freed during this checkpoint
     // It must be called before we remove all evicted candidates from the BM
     // Or else the evicted pages may end up appearing multiple times in the eviction queue
-    auto storageManager = StorageManager::Get(clientContext);
     storageManager->finalizeCheckpoint();
     // When a page is freed by the FSM, it evicts it from the BM. However, if the page is freed,
     // then reused over and over, it can be appended to the eviction queue multiple times. To
@@ -89,7 +107,6 @@ void Checkpointer::writeCheckpoint() {
     bufferManager->removeEvictedCandidates();
 
     catalog::Catalog::Get(clientContext)->resetVersion();
-    auto* dataFH = storageManager->getDataFH();
     dataFH->getPageManager()->resetVersion();
     storageManager->getWAL().reset();
     storageManager->getShadowFile().reset();
@@ -114,13 +131,27 @@ void Checkpointer::serializeCatalogAndMetadata(DatabaseHeader& databaseHeader,
             serializeCatalog(*catalog, *storageManager));
     }
     // Serialize the storage metadata if there are changes
-    if (databaseHeader.metadataPageRange.startPageIdx == common::INVALID_PAGE_IDX ||
-        hasStorageChanges || catalog->changedSinceLastCheckpoint() ||
-        dataFH->getPageManager()->changedSinceLastCheckpoint()) {
+    bool metadataInvalid = databaseHeader.metadataPageRange.startPageIdx == common::INVALID_PAGE_IDX;
+    bool catalogChanged = catalog->changedSinceLastCheckpoint();
+    bool pageManagerChanged = dataFH->getPageManager()->changedSinceLastCheckpoint();
+
+    fprintf(stderr, "[KUZU DEBUG] Checkpointer: metadata serialization check - metadataInvalid=%d, hasStorageChanges=%d, catalogChanged=%d, pageManagerChanged=%d\n",
+        metadataInvalid, hasStorageChanges, catalogChanged, pageManagerChanged);
+    fflush(stderr);
+
+    if (metadataInvalid || hasStorageChanges || catalogChanged || pageManagerChanged) {
+        fprintf(stderr, "[KUZU DEBUG] Checkpointer: Re-serializing metadata\n");
+        fflush(stderr);
         // We must free the existing metadata page range before serializing
         // So that the freed pages are serialized by the FSM
         databaseHeader.freeMetadataPageRange(*dataFH->getPageManager());
         databaseHeader.metadataPageRange = serializeMetadata(*catalog, *storageManager);
+        fprintf(stderr, "[KUZU DEBUG] Checkpointer: Metadata re-serialized to page %u\n",
+            databaseHeader.metadataPageRange.startPageIdx);
+        fflush(stderr);
+    } else {
+        fprintf(stderr, "[KUZU DEBUG] Checkpointer: Skipping metadata serialization\n");
+        fflush(stderr);
     }
 }
 
@@ -191,33 +222,87 @@ bool Checkpointer::canAutoCheckpoint(const main::ClientContext& clientContext,
 }
 
 void Checkpointer::readCheckpoint() {
+    fprintf(stderr, "[KUZU DEBUG] Checkpointer::readCheckpoint() START\n");
+    fflush(stderr);
+
     auto storageManager = StorageManager::Get(clientContext);
+    fprintf(stderr, "[KUZU DEBUG] Checkpointer: calling initDataFileHandle()\n");
+    fflush(stderr);
     storageManager->initDataFileHandle(common::VirtualFileSystem::GetUnsafe(clientContext),
         &clientContext);
+
     if (!isInMemory && storageManager->getDataFH()->getNumPages() > 0) {
+        fprintf(stderr, "[KUZU DEBUG] Checkpointer: numPages=%llu, calling readCheckpoint() overload\n",
+            storageManager->getDataFH()->getNumPages());
+        fflush(stderr);
         readCheckpoint(&clientContext, catalog::Catalog::Get(clientContext), storageManager);
+        fprintf(stderr, "[KUZU DEBUG] Checkpointer: readCheckpoint() overload complete\n");
+        fflush(stderr);
+    } else {
+        fprintf(stderr, "[KUZU DEBUG] Checkpointer: skipping readCheckpoint (isInMemory=%d, numPages=%llu)\n",
+            isInMemory, storageManager->getDataFH()->getNumPages());
+        fflush(stderr);
     }
+    fprintf(stderr, "[KUZU DEBUG] Checkpointer: auto-loading linked extensions\n");
+    fflush(stderr);
     extension::ExtensionManager::Get(clientContext)->autoLoadLinkedExtensions(&clientContext);
+    fprintf(stderr, "[KUZU DEBUG] Checkpointer::readCheckpoint() COMPLETE\n");
+    fflush(stderr);
 }
 
 void Checkpointer::readCheckpoint(main::ClientContext* context, catalog::Catalog* catalog,
     StorageManager* storageManager) {
+    fprintf(stderr, "[KUZU DEBUG] Checkpointer::readCheckpoint(overload) START\n");
+    fflush(stderr);
+
     auto fileInfo = storageManager->getDataFH()->getFileInfo();
+    fprintf(stderr, "[KUZU DEBUG] Checkpointer: creating BufferedFileReader\n");
+    fflush(stderr);
     auto reader = std::make_unique<common::BufferedFileReader>(*fileInfo);
     common::Deserializer deSer(std::move(reader));
+
+    fprintf(stderr, "[KUZU DEBUG] Checkpointer: deserializing DatabaseHeader\n");
+    fflush(stderr);
     auto currentHeader = std::make_unique<DatabaseHeader>(DatabaseHeader::deserialize(deSer));
+    fprintf(stderr, "[KUZU DEBUG] Checkpointer: DatabaseHeader deserialized - catalogPageRange.startPageIdx=%u\n",
+        currentHeader->catalogPageRange.startPageIdx);
+    fflush(stderr);
+
     // If the catalog page range is invalid, it means there is no catalog to read; thus, the
     // database is empty.
     if (currentHeader->catalogPageRange.startPageIdx != common::INVALID_PAGE_IDX) {
+        fprintf(stderr, "[KUZU DEBUG] Checkpointer: reading catalog at page %u\n",
+            currentHeader->catalogPageRange.startPageIdx);
+        fflush(stderr);
         deSer.getReader()->cast<common::BufferedFileReader>()->resetReadOffset(
             currentHeader->catalogPageRange.startPageIdx * common::KUZU_PAGE_SIZE);
         catalog->deserialize(deSer);
+        fprintf(stderr, "[KUZU DEBUG] Checkpointer: catalog deserialized\n");
+        fflush(stderr);
+
+        fprintf(stderr, "[KUZU DEBUG] Checkpointer: reading storage manager metadata at page %u\n",
+            currentHeader->metadataPageRange.startPageIdx);
+        fflush(stderr);
         deSer.getReader()->cast<common::BufferedFileReader>()->resetReadOffset(
             currentHeader->metadataPageRange.startPageIdx * common::KUZU_PAGE_SIZE);
         storageManager->deserialize(context, catalog, deSer);
+        fprintf(stderr, "[KUZU DEBUG] Checkpointer: storage manager deserialized\n");
+        fflush(stderr);
+
+        fprintf(stderr, "[KUZU DEBUG] Checkpointer: deserializing page manager\n");
+        fflush(stderr);
         storageManager->getDataFH()->getPageManager()->deserialize(deSer);
+        fprintf(stderr, "[KUZU DEBUG] Checkpointer: page manager deserialized\n");
+        fflush(stderr);
+    } else {
+        fprintf(stderr, "[KUZU DEBUG] Checkpointer: catalog page range is invalid, database is empty\n");
+        fflush(stderr);
     }
+    fprintf(stderr, "[KUZU DEBUG] Checkpointer: setting database header\n");
+    fflush(stderr);
     storageManager->setDatabaseHeader(std::move(currentHeader));
+    fprintf(stderr, "[KUZU DEBUG] Checkpointer::readCheckpoint(overload) COMPLETE\n");
+    fflush(stderr);
 }
 
 } // namespace storage

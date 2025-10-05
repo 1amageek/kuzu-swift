@@ -64,11 +64,18 @@ page_idx_t ShadowFile::getShadowPage(file_idx_t originalFile, page_idx_t origina
 }
 
 void ShadowFile::applyShadowPages(ClientContext& context) const {
+    fprintf(stderr, "[KUZU DEBUG] ShadowFile::applyShadowPages() START - shadowPageRecords.size=%zu\n", shadowPageRecords.size());
+    fflush(stderr);
+
     const auto pageBuffer = std::make_unique<uint8_t[]>(KUZU_PAGE_SIZE);
     page_idx_t shadowPageIdx = 1; // Skip header page.
     auto dataFileInfo = StorageManager::Get(context)->getDataFH()->getFileInfo();
     KU_ASSERT(shadowingFH);
     for (const auto& record : shadowPageRecords) {
+        fprintf(stderr, "[KUZU DEBUG] ShadowFile: applying shadow page %u -> original file %u, page %u\n",
+            shadowPageIdx, record.originalFileIdx, record.originalPageIdx);
+        fflush(stderr);
+
         shadowingFH->readPageFromDisk(pageBuffer.get(), shadowPageIdx++);
         dataFileInfo->writeFile(pageBuffer.get(), KUZU_PAGE_SIZE,
             record.originalPageIdx * KUZU_PAGE_SIZE);
@@ -76,7 +83,12 @@ void ShadowFile::applyShadowPages(ClientContext& context) const {
         MemoryManager::Get(context)->getBufferManager()->updateFrameIfPageIsInFrameWithoutLock(
             record.originalFileIdx, pageBuffer.get(), record.originalPageIdx);
     }
+    fprintf(stderr, "[KUZU DEBUG] ShadowFile: all pages applied, calling syncFile()...\n");
+    fflush(stderr);
+
     dataFileInfo->syncFile();
+    fprintf(stderr, "[KUZU DEBUG] ShadowFile::applyShadowPages() COMPLETE\n");
+    fflush(stderr);
 }
 
 static ku_uuid_t getOldDatabaseID(FileInfo& dataFileInfo) {

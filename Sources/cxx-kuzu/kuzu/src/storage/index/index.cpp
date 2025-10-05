@@ -88,18 +88,37 @@ void IndexHolder::serialize(common::Serializer& ser) const {
 }
 
 void IndexHolder::load(main::ClientContext* context, StorageManager* storageManager) {
+    fprintf(stderr, "[KUZU DEBUG] IndexHolder::load() START - indexType='%s'\n", indexInfo.indexType.c_str());
+    fflush(stderr);
+
     if (loaded) {
+        fprintf(stderr, "[KUZU DEBUG] IndexHolder::load() - already loaded, returning\n");
+        fflush(stderr);
         return;
     }
     KU_ASSERT(!index);
     KU_ASSERT(storageInfoBuffer);
+
+    fprintf(stderr, "[KUZU DEBUG] IndexHolder: getting index type for '%s'\n", indexInfo.indexType.c_str());
+    fflush(stderr);
     auto indexTypeOptional = StorageManager::Get(*context)->getIndexType(indexInfo.indexType);
+
     if (!indexTypeOptional.has_value()) {
+        fprintf(stderr, "[KUZU DEBUG] IndexHolder: ERROR - no index type with name: %s\n", indexInfo.indexType.c_str());
+        fflush(stderr);
         throw common::RuntimeException("No index type with name: " + indexInfo.indexType);
     }
+
+    fprintf(stderr, "[KUZU DEBUG] IndexHolder: index type found, calling loadFunc()\n");
+    fflush(stderr);
     index = indexTypeOptional.value().get().loadFunc(context, storageManager, indexInfo,
         std::span(storageInfoBuffer.get(), storageInfoBufferSize));
+    fprintf(stderr, "[KUZU DEBUG] IndexHolder: loadFunc() complete\n");
+    fflush(stderr);
+
     loaded = true;
+    fprintf(stderr, "[KUZU DEBUG] IndexHolder::load() COMPLETE\n");
+    fflush(stderr);
 }
 
 } // namespace storage

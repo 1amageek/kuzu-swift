@@ -242,14 +242,27 @@ void StorageManager::serialize(const Catalog& catalog, Serializer& ser) {
 
 void StorageManager::deserialize(main::ClientContext* context, const Catalog* catalog,
     Deserializer& deSer) {
+    fprintf(stderr, "[KUZU DEBUG] StorageManager::deserialize() START\n");
+    fflush(stderr);
+
     std::string key;
+    fprintf(stderr, "[KUZU DEBUG] StorageManager: validating num_node_tables\n");
+    fflush(stderr);
     deSer.validateDebuggingInfo(key, "num_node_tables");
     uint64_t numNodeTables = 0;
     deSer.deserializeValue<uint64_t>(numNodeTables);
+    fprintf(stderr, "[KUZU DEBUG] StorageManager: numNodeTables=%llu\n", numNodeTables);
+    fflush(stderr);
+
     for (auto i = 0u; i < numNodeTables; i++) {
+        fprintf(stderr, "[KUZU DEBUG] StorageManager: deserializing node table %u/%llu\n", i + 1, numNodeTables);
+        fflush(stderr);
         deSer.validateDebuggingInfo(key, "table_id");
         table_id_t tableID = INVALID_TABLE_ID;
         deSer.deserializeValue<table_id_t>(tableID);
+        fprintf(stderr, "[KUZU DEBUG] StorageManager: node tableID=%u\n", tableID);
+        fflush(stderr);
+
         if (!catalog->containsTable(&DUMMY_TRANSACTION, tableID)) {
             throw RuntimeException(
                 stringFormat("Load table failed: table {} doesn't exist in catalog.", tableID));
@@ -258,15 +271,30 @@ void StorageManager::deserialize(main::ClientContext* context, const Catalog* ca
         auto tableEntry = catalog->getTableCatalogEntry(&DUMMY_TRANSACTION, tableID)
                               ->ptrCast<NodeTableCatalogEntry>();
         tables[tableID] = std::make_unique<NodeTable>(this, tableEntry, &memoryManager);
+        fprintf(stderr, "[KUZU DEBUG] StorageManager: calling NodeTable::deserialize() for table %u\n", tableID);
+        fflush(stderr);
         tables[tableID]->deserialize(context, this, deSer);
+        fprintf(stderr, "[KUZU DEBUG] StorageManager: NodeTable::deserialize() complete for table %u\n", tableID);
+        fflush(stderr);
     }
+
+    fprintf(stderr, "[KUZU DEBUG] StorageManager: all node tables deserialized, validating num_rel_groups\n");
+    fflush(stderr);
     deSer.validateDebuggingInfo(key, "num_rel_groups");
     uint64_t numRelGroups = 0;
     deSer.deserializeValue<uint64_t>(numRelGroups);
+    fprintf(stderr, "[KUZU DEBUG] StorageManager: numRelGroups=%llu\n", numRelGroups);
+    fflush(stderr);
+
     for (auto i = 0u; i < numRelGroups; i++) {
+        fprintf(stderr, "[KUZU DEBUG] StorageManager: deserializing rel group %u/%llu\n", i + 1, numRelGroups);
+        fflush(stderr);
         deSer.validateDebuggingInfo(key, "rel_group_id");
         table_id_t relGroupID = INVALID_TABLE_ID;
         deSer.deserializeValue<table_id_t>(relGroupID);
+        fprintf(stderr, "[KUZU DEBUG] StorageManager: rel group ID=%u\n", relGroupID);
+        fflush(stderr);
+
         if (!catalog->containsTable(&DUMMY_TRANSACTION, relGroupID)) {
             throw RuntimeException(
                 stringFormat("Load table failed: table {} doesn't exist in catalog.", relGroupID));
@@ -274,16 +302,29 @@ void StorageManager::deserialize(main::ClientContext* context, const Catalog* ca
         deSer.validateDebuggingInfo(key, "num_inner_rel_tables");
         uint64_t numInnerRelTables = 0;
         deSer.deserializeValue<uint64_t>(numInnerRelTables);
+        fprintf(stderr, "[KUZU DEBUG] StorageManager: numInnerRelTables=%llu for group %u\n", numInnerRelTables, relGroupID);
+        fflush(stderr);
+
         auto relGroupEntry = catalog->getTableCatalogEntry(&DUMMY_TRANSACTION, relGroupID)
                                  ->ptrCast<RelGroupCatalogEntry>();
         for (auto k = 0u; k < numInnerRelTables; k++) {
+            fprintf(stderr, "[KUZU DEBUG] StorageManager: deserializing inner rel table %u/%llu\n", k + 1, numInnerRelTables);
+            fflush(stderr);
             RelTableCatalogInfo info = RelTableCatalogInfo::deserialize(deSer);
+            fprintf(stderr, "[KUZU DEBUG] StorageManager: inner rel table info - oid=%u\n", info.oid);
+            fflush(stderr);
             KU_ASSERT(!tables.contains(info.oid));
             tables[info.oid] = std::make_unique<RelTable>(relGroupEntry, info.nodePair.srcTableID,
                 info.nodePair.dstTableID, this, &memoryManager);
+            fprintf(stderr, "[KUZU DEBUG] StorageManager: calling RelTable::deserialize() for table %u\n", info.oid);
+            fflush(stderr);
             tables.at(info.oid)->deserialize(context, this, deSer);
+            fprintf(stderr, "[KUZU DEBUG] StorageManager: RelTable::deserialize() complete for table %u\n", info.oid);
+            fflush(stderr);
         }
     }
+    fprintf(stderr, "[KUZU DEBUG] StorageManager::deserialize() COMPLETE\n");
+    fflush(stderr);
 }
 
 common::ku_uuid_t StorageManager::getOrInitDatabaseID(const main::ClientContext& clientContext) {
@@ -292,18 +333,36 @@ common::ku_uuid_t StorageManager::getOrInitDatabaseID(const main::ClientContext&
 
 const storage::DatabaseHeader* StorageManager::getOrInitDatabaseHeader(
     const main::ClientContext& clientContext) {
+    fprintf(stderr, "[KUZU DEBUG] StorageManager::getOrInitDatabaseHeader() - databaseHeader=%p\n",
+        (void*)databaseHeader.get());
+    fflush(stderr);
+
     if (databaseHeader == nullptr) {
+        fprintf(stderr, "[KUZU DEBUG] StorageManager: databaseHeader is null, creating initial header\n");
+        fflush(stderr);
         // We should only create the database header if a persistent one doesn't exist
         KU_ASSERT(std::nullopt == DatabaseHeader::readDatabaseHeader(*dataFH->getFileInfo()));
         databaseHeader = std::make_unique<DatabaseHeader>(
             DatabaseHeader::createInitialHeader(RandomEngine::Get(clientContext)));
     }
+
+    fprintf(stderr, "[KUZU DEBUG] StorageManager: returning header - catalogPageRange.startPageIdx=%u, metadataPageRange.startPageIdx=%u\n",
+        databaseHeader->catalogPageRange.startPageIdx, databaseHeader->metadataPageRange.startPageIdx);
+    fflush(stderr);
+
     return databaseHeader.get();
 }
 
 void StorageManager::setDatabaseHeader(std::unique_ptr<storage::DatabaseHeader> header) {
+    fprintf(stderr, "[KUZU DEBUG] StorageManager::setDatabaseHeader() - catalogPageRange.startPageIdx=%u, metadataPageRange.startPageIdx=%u\n",
+        header->catalogPageRange.startPageIdx, header->metadataPageRange.startPageIdx);
+    fflush(stderr);
+
     KU_ASSERT(!databaseHeader || header->databaseID.value == databaseHeader->databaseID.value);
     databaseHeader = std::move(header);
+
+    fprintf(stderr, "[KUZU DEBUG] StorageManager: databaseHeader updated successfully\n");
+    fflush(stderr);
 }
 
 StorageManager* StorageManager::Get(const main::ClientContext& context) {

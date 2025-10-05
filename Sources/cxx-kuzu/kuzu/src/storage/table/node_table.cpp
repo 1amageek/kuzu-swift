@@ -822,34 +822,73 @@ void NodeTable::serialize(Serializer& serializer) const {
 
 void NodeTable::deserialize(main::ClientContext* context, StorageManager* storageManager,
     Deserializer& deSer) {
+    fprintf(stderr, "[KUZU DEBUG] NodeTable::deserialize() START\n");
+    fflush(stderr);
+
+    fprintf(stderr, "[KUZU DEBUG] NodeTable: deserializing nodeGroups\n");
+    fflush(stderr);
     nodeGroups->deserialize(deSer, *memoryManager);
+    fprintf(stderr, "[KUZU DEBUG] NodeTable: nodeGroups deserialized\n");
+    fflush(stderr);
+
     std::vector<IndexInfo> indexInfos;
     std::vector<length_t> storageInfoBufferSizes;
     std::vector<std::unique_ptr<uint8_t[]>> storageInfoBuffers;
     uint64_t numIndexes = 0u;
+
+    fprintf(stderr, "[KUZU DEBUG] NodeTable: reading numIndexes\n");
+    fflush(stderr);
     deSer.deserializeValue<uint64_t>(numIndexes);
+    fprintf(stderr, "[KUZU DEBUG] NodeTable: numIndexes=%llu\n", numIndexes);
+    fflush(stderr);
+
     indexInfos.reserve(numIndexes);
     storageInfoBufferSizes.reserve(numIndexes);
     storageInfoBuffers.reserve(numIndexes);
+
     for (uint64_t i = 0; i < numIndexes; ++i) {
+        fprintf(stderr, "[KUZU DEBUG] NodeTable: deserializing index %llu/%llu\n", i + 1, numIndexes);
+        fflush(stderr);
+
         IndexInfo indexInfo = IndexInfo::deserialize(deSer);
+        fprintf(stderr, "[KUZU DEBUG] NodeTable: IndexInfo deserialized - isBuiltin=%d\n", indexInfo.isBuiltin);
+        fflush(stderr);
         indexInfos.push_back(indexInfo);
+
         uint64_t storageInfoSize = 0u;
         deSer.deserializeValue<uint64_t>(storageInfoSize);
+        fprintf(stderr, "[KUZU DEBUG] NodeTable: storageInfoSize=%llu\n", storageInfoSize);
+        fflush(stderr);
         storageInfoBufferSizes.push_back(storageInfoSize);
+
         auto storageInfoBuffer = std::make_unique<uint8_t[]>(storageInfoSize);
         deSer.read(storageInfoBuffer.get(), storageInfoSize);
+        fprintf(stderr, "[KUZU DEBUG] NodeTable: storageInfo buffer read\n");
+        fflush(stderr);
         storageInfoBuffers.push_back(std::move(storageInfoBuffer));
     }
+
+    fprintf(stderr, "[KUZU DEBUG] NodeTable: all indexes info deserialized, loading indexes\n");
+    fflush(stderr);
     indexes.clear();
     indexes.reserve(indexInfos.size());
+
     for (auto i = 0u; i < indexInfos.size(); ++i) {
+        fprintf(stderr, "[KUZU DEBUG] NodeTable: creating IndexHolder %u/%zu\n", i + 1, indexInfos.size());
+        fflush(stderr);
         indexes.push_back(IndexHolder(indexInfos[i], std::move(storageInfoBuffers[i]),
             storageInfoBufferSizes[i]));
+
         if (indexInfos[i].isBuiltin) {
+            fprintf(stderr, "[KUZU DEBUG] NodeTable: loading builtin index %u\n", i);
+            fflush(stderr);
             indexes[i].load(context, storageManager);
+            fprintf(stderr, "[KUZU DEBUG] NodeTable: builtin index %u loaded\n", i);
+            fflush(stderr);
         }
     }
+    fprintf(stderr, "[KUZU DEBUG] NodeTable::deserialize() COMPLETE\n");
+    fflush(stderr);
 }
 
 } // namespace storage

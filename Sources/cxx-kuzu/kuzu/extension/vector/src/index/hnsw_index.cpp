@@ -636,10 +636,26 @@ void OnDiskHNSWIndex::finalize(main::ClientContext* context) {
 
 void OnDiskHNSWIndex::checkpoint(main::ClientContext* context,
     storage::PageAllocator& pageAllocator) {
+    fprintf(stderr, "[KUZU DEBUG] ========== OnDiskHNSWIndex::checkpoint() START ==========\n");
+    fflush(stderr);
+
     auto [nodeTableEntry, upperRelTableEntry, lowerRelTableEntry] = getIndexTableCatalogEntries(
         catalog::Catalog::Get(*context), &DUMMY_CHECKPOINT_TRANSACTION, indexInfo);
+
+    fprintf(stderr, "[KUZU DEBUG] OnDiskHNSWIndex: upperRelTable checkpoint starting...\n");
+    fflush(stderr);
     upperRelTable->checkpoint(context, upperRelTableEntry, pageAllocator);
+    fprintf(stderr, "[KUZU DEBUG] OnDiskHNSWIndex: upperRelTable checkpoint complete\n");
+    fflush(stderr);
+
+    fprintf(stderr, "[KUZU DEBUG] OnDiskHNSWIndex: lowerRelTable checkpoint starting...\n");
+    fflush(stderr);
     lowerRelTable->checkpoint(context, lowerRelTableEntry, pageAllocator);
+    fprintf(stderr, "[KUZU DEBUG] OnDiskHNSWIndex: lowerRelTable checkpoint complete\n");
+    fflush(stderr);
+
+    fprintf(stderr, "[KUZU DEBUG] ========== OnDiskHNSWIndex::checkpoint() COMPLETE ==========\n");
+    fflush(stderr);
 }
 
 void OnDiskHNSWIndex::insertInternal(Transaction* transaction, common::offset_t offset,

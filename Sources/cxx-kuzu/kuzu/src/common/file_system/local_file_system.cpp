@@ -456,9 +456,17 @@ void LocalFileSystem::syncFile(const FileInfo& fileInfo) const {
 #if HAS_FULLFSYNC and defined(__APPLE__)
     // Try F_FULLFSYNC first on macOS/iOS, which is required to guarantee durability past power
     // failures.
+    fprintf(stderr, "[KUZU DEBUG] LocalFileSystem::syncFile() - attempting F_FULLFSYNC for: %s\n", fileInfo.path.c_str());
+    fflush(stderr);
+
     if (fcntl(localFileInfo->fd, F_FULLFSYNC) == 0) {
+        fprintf(stderr, "[KUZU DEBUG] LocalFileSystem::syncFile() - F_FULLFSYNC succeeded\n");
+        fflush(stderr);
         return;
     }
+    fprintf(stderr, "[KUZU DEBUG] LocalFileSystem::syncFile() - F_FULLFSYNC failed, errno=%d\n", errno);
+    fflush(stderr);
+
     if (errno != ENOTSUP && errno != EINVAL) {
         // LCOV_EXCL_START
         if (errno == EIO) {
@@ -468,12 +476,18 @@ void LocalFileSystem::syncFile(const FileInfo& fileInfo) const {
             stringFormat("Failed to sync file {}: {}", fileInfo.path, posixErrMessage()));
         // LCOV_EXCL_STOP
     }
+    fprintf(stderr, "[KUZU DEBUG] LocalFileSystem::syncFile() - falling back to fdatasync/fsync\n");
+    fflush(stderr);
 #endif
     bool syncSuccess = false;
 #if HAS_FDATASYNC
     syncSuccess = fdatasync(localFileInfo->fd) == 0; // Only sync file data + essential metadata.
+    fprintf(stderr, "[KUZU DEBUG] LocalFileSystem::syncFile() - fdatasync result=%d\n", syncSuccess);
+    fflush(stderr);
 #else
     syncSuccess = fsync(localFileInfo->fd) == 0; // Sync file data + all metadata.
+    fprintf(stderr, "[KUZU DEBUG] LocalFileSystem::syncFile() - fsync result=%d\n", syncSuccess);
+    fflush(stderr);
 #endif
     if (!syncSuccess) {
         throw IOException(stringFormat("Failed to sync file {}.", fileInfo.path));
