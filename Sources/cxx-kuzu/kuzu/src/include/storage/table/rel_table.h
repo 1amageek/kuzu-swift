@@ -239,14 +239,10 @@ private:
 
     void detachDeleteForCSRRels(transaction::Transaction* transaction, RelTableData* tableData,
         RelTableData* reverseTableData, RelTableScanState* relDataReadState,
-        RelTableDeleteState* deleteState, LocalTable* localTable,
-        std::vector<common::offset_t>& localDeletions);
+        RelTableDeleteState* deleteState);
 
-    void checkRelMultiplicityConstraintSafe(transaction::Transaction* transaction,
-        const TableInsertState& state, LocalTable* localTable) const;
-
-    // Internal scan without lock - for use when tableMutex is already held
-    bool scanInternalUnsafe(transaction::Transaction* transaction, TableScanState& scanState);
+    void checkRelMultiplicityConstraint(transaction::Transaction* transaction,
+        const TableInsertState& state) const;
 
 private:
     common::table_id_t relGroupID;
@@ -255,11 +251,6 @@ private:
     std::mutex relOffsetMtx;
     common::offset_t nextRelOffset;
     std::vector<std::unique_ptr<RelTableData>> directedRelData;
-
-    // Protects concurrent access to table operations
-    // Read operations use shared_lock (multiple readers allowed)
-    // Write operations use unique_lock (exclusive access)
-    mutable std::shared_mutex tableMutex;
 };
 
 } // namespace storage
