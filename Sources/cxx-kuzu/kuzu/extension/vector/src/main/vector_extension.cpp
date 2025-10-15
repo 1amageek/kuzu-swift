@@ -15,18 +15,16 @@
 namespace kuzu {
 namespace vector_extension {
 
-static void initHNSWEntries(main::ClientContext* context) {
+static void initHNSWEntries(main::ClientContext* context, transaction::Transaction* txn) {
     auto storageManager = storage::StorageManager::Get(*context);
     auto catalog = catalog::Catalog::Get(*context);
     auto* database = context->getDatabase();
 
     // Collect HNSW indexes
     std::vector<catalog::IndexCatalogEntry*> hnswIndexes;
-    for (auto& indexEntry : catalog->getIndexEntries(transaction::Transaction::Get(*context))) {
+    for (auto& indexEntry : catalog->getIndexEntries(txn)) {
         // Cancellation check during collection
         if (database->vectorIndexLoadCancelled.load(std::memory_order_acquire)) {
-            fprintf(stderr, "[KUZU DEBUG] initHNSWEntries: Cancelled during collection\n");
-            fflush(stderr);
             return;
         }
 
@@ -46,10 +44,6 @@ static void initHNSWEntries(main::ClientContext* context) {
         hnswIndexes.size()
     );
 
-    fprintf(stderr, "[KUZU DEBUG] Loading %zu HNSW indexes using %zu threads\n",
-            hnswIndexes.size(), numThreads);
-    fflush(stderr);
-
     std::atomic<size_t> nextIndexToProcess{0};
     std::vector<std::thread> workers;
     std::mutex errorMutex;
@@ -61,8 +55,6 @@ static void initHNSWEntries(main::ClientContext* context) {
             while (true) {
                 // Cancellation check at loop start
                 if (database->vectorIndexLoadCancelled.load(std::memory_order_acquire)) {
-                    fprintf(stderr, "[KUZU DEBUG] Thread %zu: Cancelled at loop start\n", i);
-                    fflush(stderr);
                     break;
                 }
 
@@ -73,15 +65,8 @@ static void initHNSWEntries(main::ClientContext* context) {
 
                 auto* indexEntry = hnswIndexes[idx];
                 try {
-                    fprintf(stderr, "[KUZU DEBUG] Thread %zu loading index: %s\n",
-                            i, indexEntry->getIndexName().c_str());
-                    fflush(stderr);
-
                     // Cancellation check before loading
                     if (database->vectorIndexLoadCancelled.load(std::memory_order_acquire)) {
-                        fprintf(stderr, "[KUZU DEBUG] Thread %zu: Cancelled before loading %s\n",
-                                i, indexEntry->getIndexName().c_str());
-                        fflush(stderr);
                         break;
                     }
 
@@ -100,19 +85,12 @@ static void initHNSWEntries(main::ClientContext* context) {
                         if (!indexHolder.isLoaded()) {
                             // Cancellation check before expensive loading
                             if (database->vectorIndexLoadCancelled.load(std::memory_order_acquire)) {
-                                fprintf(stderr, "[KUZU DEBUG] Thread %zu: Cancelled during loading %s\n",
-                                        i, indexEntry->getIndexName().c_str());
-                                fflush(stderr);
                                 break;
                             }
 
-                            indexHolder.load(context, storageManager);
+                            indexHolder.load(context, storageManager, indexEntry);
                         }
                     }
-
-                    fprintf(stderr, "[KUZU DEBUG] Thread %zu completed index: %s\n",
-                            i, indexEntry->getIndexName().c_str());
-                    fflush(stderr);
 
                 } catch (const std::exception& e) {
                     std::lock_guard<std::mutex> lock(errorMutex);
@@ -135,9 +113,71 @@ static void initHNSWEntries(main::ClientContext* context) {
         }
         throw common::RuntimeException(errorMsg);
     }
+}
 
-    fprintf(stderr, "[KUZU DEBUG] initHNSWEntries completed\n");
-    fflush(stderr);
+// Synchronous HNSW index loading function (used during recovery and by background thread)
+static void loadHNSWIndexesSync(main::Database* database,
+    std::shared_ptr<common::DatabaseLifeCycleManager> lifeCycleManager) {
+    try {
+        // CRITICAL SECTION: Check and create ClientContext atomically
+        // This prevents TOCTOU race with destructor
+        main::ClientContext* bgContextPtr = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(database->backgroundThreadStartMutex);
+
+            // Check if Database already closed
+            if (lifeCycleManager->isDatabaseClosed) {
+                return;
+            }
+
+            // Create ClientContext while holding lock
+            bgContextPtr = new main::ClientContext(database);
+        }
+        // Lock released: Destructor can now proceed if needed
+
+        // Wrap in unique_ptr for automatic cleanup
+        std::unique_ptr<main::ClientContext> bgContext(bgContextPtr);
+
+        // Early exit if cancelled (for background thread scenario)
+        if (database->vectorIndexLoadCancelled.load(std::memory_order_acquire)) {
+            return;
+        }
+
+        // Begin READ_ONLY transaction
+        auto* txn = database->getTransactionManager()->beginTransaction(
+            *bgContext,
+            transaction::TransactionType::READ_ONLY
+        );
+
+        // Early exit if cancelled
+        if (database->vectorIndexLoadCancelled.load(std::memory_order_acquire)) {
+            database->getTransactionManager()->rollback(*bgContext, txn);
+            return;
+        }
+
+        // Execute HNSW loading
+        initHNSWEntries(bgContext.get(), txn);
+
+        // Check cancellation before committing
+        if (database->vectorIndexLoadCancelled.load(std::memory_order_acquire)) {
+            database->getTransactionManager()->rollback(*bgContext, txn);
+            return;
+        }
+
+        // Commit transaction
+        database->getTransactionManager()->commit(*bgContext, txn);
+
+        // Notify completion (internally checks vectorIndexLoadCancelled)
+        database->notifyVectorIndexLoadComplete(true);
+
+    } catch (const std::exception& e) {
+        // Notify error (internally checks vectorIndexLoadCancelled)
+        database->notifyVectorIndexLoadComplete(false, e.what());
+
+    } catch (...) {
+        // Notify error (internally checks vectorIndexLoadCancelled)
+        database->notifyVectorIndexLoadComplete(false, "Unknown error");
+    }
 }
 
 void VectorExtension::load(main::ClientContext* context) {
@@ -152,123 +192,41 @@ void VectorExtension::load(main::ClientContext* context) {
     extension::ExtensionUtils::addStandaloneTableFunc<DropVectorIndexFunction>(db);
     extension::ExtensionUtils::registerIndexType(db, OnDiskHNSWIndex::getIndexType());
 
-    fprintf(stderr, "[KUZU DEBUG] Starting HNSW index loading in background\n");
-    fflush(stderr);
-
     // Capture Database* and shared_ptr to lifecycle manager
     auto* database = context->getDatabase();
     auto lifeCycleManager = database->dbLifeCycleManager;
 
-    // Start background loading
-    std::thread([database, lifeCycleManager]() {
-        fprintf(stderr, "[KUZU DEBUG] Background thread: Started\n");
-        fflush(stderr);
+    // Check if we are in recovery mode (WAL replay)
+    // During recovery, we must load indexes synchronously to avoid race conditions where
+    // WAL records (e.g., NodeDeletionRecord) access indexes before background loading completes
+    if (lifeCycleManager->isRecoveryInProgress.load(std::memory_order_acquire)) {
+        // Synchronous loading during recovery
+        loadHNSWIndexesSync(database, lifeCycleManager);
+        return;
+    }
 
-        try {
-            // CRITICAL SECTION: Check and create ClientContext atomically
-            // This prevents TOCTOU race with destructor
-            main::ClientContext* bgContextPtr = nullptr;
-            {
-                std::lock_guard<std::mutex> lock(database->backgroundThreadStartMutex);
+    // Check if extension is statically linked (test environment)
+    // Static-linked extensions should load synchronously for testing reliability
+#if defined(__STATIC_LINK_EXTENSION_TEST__) || !defined(BUILD_DYNAMIC_LOAD)
+    bool isStaticLinked = true;
+#else
+    bool isStaticLinked = false;
+#endif
 
-                // Check if Database already closed
-                if (lifeCycleManager->isDatabaseClosed) {
-                    fprintf(stderr, "[KUZU DEBUG] Background thread: Database already closed, exiting\n");
-                    fflush(stderr);
-                    return;
-                }
+    if (isStaticLinked) {
+        // Synchronous loading for static-linked extensions (tests)
+        // This ensures indexes are immediately ready for use after Database construction
+        loadHNSWIndexesSync(database, lifeCycleManager);
+        return;
+    }
 
-                fprintf(stderr, "[KUZU DEBUG] Background thread: Creating ClientContext (protected by mutex)\n");
-                fflush(stderr);
+    // Normal operation (dynamic extension): start background loading thread
+    // This allows the database to become available immediately while indexes load in background
+    std::thread loaderThread([database, lifeCycleManager]() {
+        loadHNSWIndexesSync(database, lifeCycleManager);
+    });
 
-                // Create ClientContext while holding lock
-                bgContextPtr = new main::ClientContext(database);
-            }
-            // Lock released: Destructor can now proceed if needed
-
-            // Wrap in unique_ptr for automatic cleanup
-            std::unique_ptr<main::ClientContext> bgContext(bgContextPtr);
-
-            fprintf(stderr, "[KUZU DEBUG] Background thread: ClientContext created\n");
-            fflush(stderr);
-
-            // Early exit if cancelled
-            if (database->vectorIndexLoadCancelled.load(std::memory_order_acquire)) {
-                fprintf(stderr, "[KUZU DEBUG] Background thread: Cancelled before transaction\n");
-                fflush(stderr);
-                return;
-            }
-
-            fprintf(stderr, "[KUZU DEBUG] Background thread: Beginning READ_ONLY transaction\n");
-            fflush(stderr);
-
-            // Begin READ_ONLY transaction
-            auto* txn = database->getTransactionManager()->beginTransaction(
-                *bgContext,
-                transaction::TransactionType::READ_ONLY
-            );
-
-            // Early exit if cancelled
-            if (database->vectorIndexLoadCancelled.load(std::memory_order_acquire)) {
-                fprintf(stderr, "[KUZU DEBUG] Background thread: Cancelled, rolling back transaction\n");
-                fflush(stderr);
-                database->getTransactionManager()->rollback(*bgContext, txn);
-                return;
-            }
-
-            fprintf(stderr, "[KUZU DEBUG] Background thread: Loading HNSW indexes...\n");
-            fflush(stderr);
-
-            // Execute HNSW loading
-            initHNSWEntries(bgContext.get());
-
-            fprintf(stderr, "[KUZU DEBUG] Background thread: Loading completed\n");
-            fflush(stderr);
-
-            // Check cancellation before committing
-            if (database->vectorIndexLoadCancelled.load(std::memory_order_acquire)) {
-                fprintf(stderr, "[KUZU DEBUG] Background thread: Cancelled after loading, rolling back\n");
-                fflush(stderr);
-                database->getTransactionManager()->rollback(*bgContext, txn);
-                return;
-            }
-
-            fprintf(stderr, "[KUZU DEBUG] Background thread: Committing transaction\n");
-            fflush(stderr);
-
-            // Commit transaction
-            database->getTransactionManager()->commit(*bgContext, txn);
-
-            fprintf(stderr, "[KUZU DEBUG] Background thread: Transaction committed\n");
-            fflush(stderr);
-
-            // Notify completion (internally checks vectorIndexLoadCancelled)
-            fprintf(stderr, "[KUZU DEBUG] Background thread: Notifying completion\n");
-            fflush(stderr);
-            database->notifyVectorIndexLoadComplete(true);
-
-        } catch (const std::exception& e) {
-            fprintf(stderr, "[KUZU ERROR] Background thread: Exception: %s\n", e.what());
-            fflush(stderr);
-
-            // Notify error (internally checks vectorIndexLoadCancelled)
-            database->notifyVectorIndexLoadComplete(false, e.what());
-
-        } catch (...) {
-            fprintf(stderr, "[KUZU ERROR] Background thread: Unknown exception\n");
-            fflush(stderr);
-
-            // Notify error (internally checks vectorIndexLoadCancelled)
-            database->notifyVectorIndexLoadComplete(false, "Unknown error");
-        }
-
-        fprintf(stderr, "[KUZU DEBUG] Background thread: Exiting\n");
-        fflush(stderr);
-
-    }).detach();
-
-    fprintf(stderr, "[KUZU DEBUG] VectorExtension::load() completed, background loading started\n");
-    fflush(stderr);
+    database->startVectorIndexLoader(std::move(loaderThread));
 }
 
 } // namespace vector_extension

@@ -725,7 +725,8 @@ void PrimaryKeyIndex::checkpoint(main::ClientContext*, storage::PageAllocator& p
 PrimaryKeyIndex::~PrimaryKeyIndex() = default;
 
 std::unique_ptr<Index> PrimaryKeyIndex::load(main::ClientContext* context,
-    StorageManager* storageManager, IndexInfo indexInfo, std::span<uint8_t> storageInfoBuffer) {
+    StorageManager* storageManager, const catalog::IndexCatalogEntry* catalogEntry,
+    IndexInfo indexInfo, std::span<uint8_t> storageInfoBuffer) {
     fprintf(stderr, "[KUZU DEBUG] PrimaryKeyIndex::load() START - storageInfoBuffer.size=%zu\n", storageInfoBuffer.size());
     fflush(stderr);
 

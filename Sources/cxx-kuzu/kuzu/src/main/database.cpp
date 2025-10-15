@@ -121,133 +121,68 @@ void Database::initMembers(std::string_view dbPath, construct_bm_func_t initBmFu
     auto clientContext = ClientContext(this);
     databasePath = StorageUtils::expandPath(&clientContext, dbPathStr);
 
-    fprintf(stderr, "[KUZU DEBUG] initMembers() - expanded path: %s\n", databasePath.c_str());
-    fprintf(stderr, "[KUZU DEBUG] initMembers() - checking if path exists...\n");
-    fflush(stderr);
-
-    bool pathExists = std::filesystem::exists(databasePath);
-    bool isDirectory = pathExists && std::filesystem::is_directory(databasePath);
-    bool isFile = pathExists && std::filesystem::is_regular_file(databasePath);
-
-    fprintf(stderr, "[KUZU DEBUG] initMembers() - exists=%d, isDirectory=%d, isFile=%d\n",
-        pathExists, isDirectory, isFile);
-    fflush(stderr);
-
     if (std::filesystem::is_directory(databasePath)) {
         throw RuntimeException("Database path cannot be a directory: " + databasePath);
     }
-
-    fprintf(stderr, "[KUZU DEBUG] initMembers() - creating VirtualFileSystem...\n");
-    fflush(stderr);
     vfs = std::make_unique<VirtualFileSystem>(databasePath);
-
-    fprintf(stderr, "[KUZU DEBUG] initMembers() - validating path in read-only mode...\n");
-    fflush(stderr);
     validatePathInReadOnly();
 
-    fprintf(stderr, "[KUZU DEBUG] initMembers() - creating BufferManager...\n");
-    fflush(stderr);
     bufferManager = initBmFunc(*this);
-
-    fprintf(stderr, "[KUZU DEBUG] initMembers() - creating MemoryManager...\n");
-    fflush(stderr);
     memoryManager = std::make_unique<MemoryManager>(bufferManager.get(), vfs.get());
-
 #if defined(__APPLE__)
-    fprintf(stderr, "[KUZU DEBUG] initMembers() - creating QueryProcessor (Apple)...\n");
-    fflush(stderr);
     queryProcessor =
         std::make_unique<processor::QueryProcessor>(dbConfig.maxNumThreads, dbConfig.threadQos);
 #else
-    fprintf(stderr, "[KUZU DEBUG] initMembers() - creating QueryProcessor...\n");
-    fflush(stderr);
     queryProcessor = std::make_unique<processor::QueryProcessor>(dbConfig.maxNumThreads);
 #endif
 
-    fprintf(stderr, "[KUZU DEBUG] initMembers() - creating Catalog...\n");
-    fflush(stderr);
     catalog = std::make_unique<Catalog>();
-
-    fprintf(stderr, "[KUZU DEBUG] initMembers() - creating StorageManager...\n");
-    fflush(stderr);
     storageManager = std::make_unique<StorageManager>(databasePath, dbConfig.readOnly,
         dbConfig.enableChecksums, *memoryManager, dbConfig.enableCompression, vfs.get());
-
-    fprintf(stderr, "[KUZU DEBUG] initMembers() - creating TransactionManager...\n");
-    fflush(stderr);
     transactionManager = std::make_unique<TransactionManager>(storageManager->getWAL());
-
-    fprintf(stderr, "[KUZU DEBUG] initMembers() - creating DatabaseManager...\n");
-    fflush(stderr);
     databaseManager = std::make_unique<DatabaseManager>();
 
-    fprintf(stderr, "[KUZU DEBUG] initMembers() - creating ExtensionManager...\n");
-    fflush(stderr);
     extensionManager = std::make_unique<extension::ExtensionManager>();
     dbLifeCycleManager = std::make_shared<DatabaseLifeCycleManager>();
-
     if (clientContext.isInMemory()) {
-        fprintf(stderr, "[KUZU DEBUG] initMembers() - in-memory mode, initializing data file handle...\n");
-        fflush(stderr);
         storageManager->initDataFileHandle(vfs.get(), &clientContext);
         extensionManager->autoLoadLinkedExtensions(&clientContext);
         return;
     }
+    // Set recovery flag before WAL replay to signal extensions to load synchronously
+    dbLifeCycleManager->isRecoveryInProgress.store(true, std::memory_order_release);
+    try {
+        StorageManager::recover(clientContext, dbConfig.throwOnWalReplayFailure,
+            dbConfig.enableChecksums);
+        // Clear recovery flag after WAL replay completes
+        dbLifeCycleManager->isRecoveryInProgress.store(false, std::memory_order_release);
+    } catch (...) {
+        // Ensure flag is cleared even on exception
+        dbLifeCycleManager->isRecoveryInProgress.store(false, std::memory_order_release);
+        throw;
+    }
 
-    fprintf(stderr, "[KUZU DEBUG] initMembers() - calling StorageManager::recover()...\n");
-    fflush(stderr);
-    StorageManager::recover(clientContext, dbConfig.throwOnWalReplayFailure,
-        dbConfig.enableChecksums);
-
-    fprintf(stderr, "[KUZU DEBUG] initMembers() COMPLETE\n");
-    fflush(stderr);
+    // Load extensions after recovery (WAL replay) completes
+    // This ensures no background threads compete with recovery process
+    extensionManager->autoLoadLinkedExtensions(&clientContext);
 }
 
 Database::~Database() {
-    fprintf(stderr, "[KUZU DEBUG] ========== Database destructor called ==========\n");
-    fflush(stderr);
-
-    // Cancel background vector index loading (CRITICAL SECTION)
-    // This mutex prevents TOCTOU race with background thread
+    // Signal cancellation to background thread (if any)
     {
         std::lock_guard<std::mutex> lock(backgroundThreadStartMutex);
-
-        fprintf(stderr, "[KUZU DEBUG] Setting cancellation flags\n");
-        fflush(stderr);
-
         vectorIndexLoadCancelled.store(true, std::memory_order_release);
         dbLifeCycleManager->isDatabaseClosed = true;
     }
-    // Lock released: Background thread can now proceed to exit
+
+    joinVectorIndexLoaderThread();
 
     if (!dbConfig.readOnly && dbConfig.forceCheckpointOnClose) {
-        fprintf(stderr, "[KUZU DEBUG] Attempting checkpoint on close...\n");
-        fflush(stderr);
         try {
             ClientContext clientContext(this);
-            fprintf(stderr, "[KUZU DEBUG] ClientContext created, calling checkpoint...\n");
-            fflush(stderr);
             transactionManager->checkpoint(clientContext);
-            fprintf(stderr, "[KUZU DEBUG] Checkpoint on close succeeded\n");
-            fflush(stderr);
-        } catch (Exception& e) {
-            fprintf(stderr, "[KUZU ERROR] Checkpoint on close failed: %s\n", e.what());
-            fflush(stderr);
-        } catch (std::exception& e) {
-            fprintf(stderr, "[KUZU ERROR] Checkpoint on close failed (std::exception): %s\n", e.what());
-            fflush(stderr);
-        } catch (...) {
-            fprintf(stderr, "[KUZU ERROR] Checkpoint on close failed: Unknown exception\n");
-            fflush(stderr);
-        }
-    } else {
-        fprintf(stderr, "[KUZU DEBUG] Checkpoint skipped (readOnly=%d, forceCheckpointOnClose=%d)\n",
-                dbConfig.readOnly, dbConfig.forceCheckpointOnClose);
-        fflush(stderr);
+        } catch (...) {} // NOLINT
     }
-
-    fprintf(stderr, "[KUZU DEBUG] ========== Database destructor finished ==========\n");
-    fflush(stderr);
 }
 
 void Database::setVectorIndexLoadCallback(
@@ -263,49 +198,29 @@ void Database::setVectorIndexLoadCallback(
         if (callback) {
             bool success = vectorIndexesLoadSuccess.load(std::memory_order_acquire);
             const char* errMsg = success ? nullptr : vectorIndexLoadErrorMessage.c_str();
-
-            fprintf(stderr, "[KUZU DEBUG] Invoking callback immediately (already loaded)\n");
-            fflush(stderr);
-
             callback(userData, success, errMsg);
         }
     }
 }
 
 void Database::notifyVectorIndexLoadComplete(bool success, const std::string& errorMsg) {
-    // V3 FIX: Check vectorIndexLoadCancelled (atomic), not isDatabaseClosed
+    // Check vectorIndexLoadCancelled (atomic), not isDatabaseClosed
     if (vectorIndexLoadCancelled.load(std::memory_order_acquire)) {
-        fprintf(stderr, "[KUZU DEBUG] Loading cancelled, skipping callback notification\n");
-        fflush(stderr);
         return;
     }
 
-    fprintf(stderr, "[KUZU DEBUG] Vector index loading %s\n",
-            success ? "succeeded" : "failed");
-    if (!success && !errorMsg.empty()) {
-        fprintf(stderr, "[KUZU DEBUG]   Error: %s\n", errorMsg.c_str());
-    }
-    fflush(stderr);
-
-    // Store result
+    // Store results with release semantics
     vectorIndexesLoadSuccess.store(success, std::memory_order_release);
     if (!success) {
-        vectorIndexLoadErrorMessage = errorMsg;  // Copy for lifetime safety
+        vectorIndexLoadErrorMessage = errorMsg;
     }
     vectorIndexesLoaded.store(true, std::memory_order_release);
 
-    // Invoke callback
+    // Invoke callback if registered
     std::lock_guard<std::mutex> lock(vectorIndexCallbackMutex);
     if (vectorIndexCallback) {
-        const char* errMsgPtr = success ? nullptr : vectorIndexLoadErrorMessage.c_str();
-
-        fprintf(stderr, "[KUZU DEBUG] Invoking callback on background thread\n");
-        fflush(stderr);
-
-        vectorIndexCallback(vectorIndexCallbackUserData, success, errMsgPtr);
-
-        fprintf(stderr, "[KUZU DEBUG] Callback completed\n");
-        fflush(stderr);
+        const char* errorMsgPtr = success ? nullptr : vectorIndexLoadErrorMessage.c_str();
+        vectorIndexCallback(vectorIndexCallbackUserData, success, errorMsgPtr);
     }
 }
 
@@ -395,6 +310,34 @@ void Database::validatePathInReadOnly() const {
 uint64_t Database::getNextQueryID() {
     std::unique_lock lock(queryIDGenerator.queryIDLock);
     return queryIDGenerator.queryID++;
+}
+
+void Database::startVectorIndexLoader(std::thread loaderThread) {
+    if (!loaderThread.joinable()) {
+        return;
+    }
+
+    std::thread previous;
+    {
+        std::lock_guard<std::mutex> lock(vectorIndexLoaderMutex);
+        previous = std::move(vectorIndexLoaderThread);
+        vectorIndexLoaderThread = std::move(loaderThread);
+    }
+
+    if (previous.joinable()) {
+        previous.join();
+    }
+}
+
+void Database::joinVectorIndexLoaderThread() {
+    std::thread loader;
+    {
+        std::lock_guard<std::mutex> lock(vectorIndexLoaderMutex);
+        loader = std::move(vectorIndexLoaderThread);
+    }
+    if (loader.joinable()) {
+        loader.join();
+    }
 }
 
 } // namespace main

@@ -20,14 +20,13 @@ FTSIndex::FTSIndex(IndexInfo indexInfo, std::unique_ptr<IndexStorageInfo> storag
       config{std::move(config)} {}
 
 std::unique_ptr<Index> FTSIndex::load(main::ClientContext* context, StorageManager*,
-    IndexInfo indexInfo, std::span<uint8_t> storageInfoBuffer) {
-    auto catalog = catalog::Catalog::Get(*context);
+    const catalog::IndexCatalogEntry* catalogEntry, IndexInfo indexInfo,
+    std::span<uint8_t> storageInfoBuffer) {
     auto reader =
         std::make_unique<BufferReader>(storageInfoBuffer.data(), storageInfoBuffer.size());
     auto storageInfo = FTSStorageInfo::deserialize(std::move(reader));
-    auto indexEntry = catalog->getIndex(transaction::Transaction::Get(*context), indexInfo.tableID,
-        indexInfo.name);
-    auto ftsConfig = indexEntry->getAuxInfo().cast<FTSIndexAuxInfo>().config;
+    KU_ASSERT(catalogEntry != nullptr);
+    auto ftsConfig = catalogEntry->getAuxInfo().cast<FTSIndexAuxInfo>().config;
     return std::make_unique<FTSIndex>(std::move(indexInfo), std::move(storageInfo),
         std::move(ftsConfig), context);
 }

@@ -2,6 +2,7 @@
 
 #include "catalog/catalog_entry/index_catalog_entry.h"
 #include "catalog/hnsw_index_catalog_entry.h"
+#include "extension/extension.h"
 #include "function/hnsw_index_functions.h"
 #include "index/hnsw_rel_batch_insert.h"
 #include "storage/storage_manager.h"
@@ -468,16 +469,18 @@ OnDiskHNSWIndex::OnDiskHNSWIndex(const main::ClientContext* context, IndexInfo i
 }
 
 std::unique_ptr<Index> OnDiskHNSWIndex::load(main::ClientContext* context, StorageManager*,
-    IndexInfo indexInfo, std::span<uint8_t> storageInfoBuffer) {
+    const catalog::IndexCatalogEntry* catalogEntry, IndexInfo indexInfo,
+    std::span<uint8_t> storageInfoBuffer) {
     auto reader =
         std::make_unique<common::BufferReader>(storageInfoBuffer.data(), storageInfoBuffer.size());
     auto storageInfo = HNSWStorageInfo::deserialize(std::move(reader));
-    const auto catalog = catalog::Catalog::Get(*context);
-    const auto transaction = Transaction::Get(*context);
-    const auto indexEntry = catalog->getIndex(transaction, indexInfo.tableID, indexInfo.name);
-    const auto auxInfo = indexEntry->getAuxInfo().cast<HNSWIndexAuxInfo>();
-    return std::make_unique<OnDiskHNSWIndex>(context, std::move(indexInfo), std::move(storageInfo),
+
+    KU_ASSERT(catalogEntry != nullptr);
+    const auto auxInfo = catalogEntry->getAuxInfo().cast<HNSWIndexAuxInfo>();
+
+    auto result = std::make_unique<OnDiskHNSWIndex>(context, std::move(indexInfo), std::move(storageInfo),
         auxInfo.config.copy());
+    return result;
 }
 
 std::vector<NodeWithDistance> OnDiskHNSWIndex::search(Transaction* transaction,
@@ -636,26 +639,10 @@ void OnDiskHNSWIndex::finalize(main::ClientContext* context) {
 
 void OnDiskHNSWIndex::checkpoint(main::ClientContext* context,
     storage::PageAllocator& pageAllocator) {
-    fprintf(stderr, "[KUZU DEBUG] ========== OnDiskHNSWIndex::checkpoint() START ==========\n");
-    fflush(stderr);
-
     auto [nodeTableEntry, upperRelTableEntry, lowerRelTableEntry] = getIndexTableCatalogEntries(
-        catalog::Catalog::Get(*context), &DUMMY_CHECKPOINT_TRANSACTION, indexInfo);
-
-    fprintf(stderr, "[KUZU DEBUG] OnDiskHNSWIndex: upperRelTable checkpoint starting...\n");
-    fflush(stderr);
+        catalog::Catalog::Get(*context), kuzu::extension::getExtensionCheckpointTransaction(), indexInfo);
     upperRelTable->checkpoint(context, upperRelTableEntry, pageAllocator);
-    fprintf(stderr, "[KUZU DEBUG] OnDiskHNSWIndex: upperRelTable checkpoint complete\n");
-    fflush(stderr);
-
-    fprintf(stderr, "[KUZU DEBUG] OnDiskHNSWIndex: lowerRelTable checkpoint starting...\n");
-    fflush(stderr);
     lowerRelTable->checkpoint(context, lowerRelTableEntry, pageAllocator);
-    fprintf(stderr, "[KUZU DEBUG] OnDiskHNSWIndex: lowerRelTable checkpoint complete\n");
-    fflush(stderr);
-
-    fprintf(stderr, "[KUZU DEBUG] ========== OnDiskHNSWIndex::checkpoint() COMPLETE ==========\n");
-    fflush(stderr);
 }
 
 void OnDiskHNSWIndex::insertInternal(Transaction* transaction, common::offset_t offset,

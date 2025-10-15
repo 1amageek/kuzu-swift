@@ -1,8 +1,8 @@
 #pragma once
 
-#include <atomic>
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 #if defined(__APPLE__)
@@ -230,7 +230,10 @@ public:
     }
 
     // Internal method for VectorExtension to notify loading completion
-    void notifyVectorIndexLoadComplete(bool success, const std::string& errorMsg = "");
+    KUZU_API void notifyVectorIndexLoadComplete(bool success, const std::string& errorMsg = "");
+
+    // Register or replace background vector index loader thread
+    KUZU_API void startVectorIndexLoader(std::thread loaderThread);
 
     // Public members for background loading coordination (thread-safe by design)
     std::atomic<bool> vectorIndexLoadCancelled{false};
@@ -283,6 +286,12 @@ private:
     VectorIndexLoadCompletionCallback vectorIndexCallback = nullptr;
     void* vectorIndexCallbackUserData = nullptr;
     std::string vectorIndexLoadErrorMessage;
+
+    // Loader thread ownership
+    std::mutex vectorIndexLoaderMutex;
+    std::thread vectorIndexLoaderThread;
+
+    void joinVectorIndexLoaderThread();
 };
 
 } // namespace main
