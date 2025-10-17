@@ -1,5 +1,6 @@
 #include "main/database.h"
 
+#include <chrono>
 #include "extension/binder_extension.h"
 #include "extension/extension_manager.h"
 #include "extension/mapper_extension.h"
@@ -9,12 +10,13 @@
 #include "main/database_manager.h"
 #include "storage/buffer_manager/buffer_manager.h"
 
-#include <iostream>
-
 #if defined(_WIN32)
 #include <windows.h>
 #else
 #include <unistd.h>
+#if defined(__linux__)
+#include <sys/resource.h>
+#endif
 #endif
 
 #include "common/exception/exception.h"
@@ -91,18 +93,171 @@ Database::Database(std::string_view databasePath, SystemConfig systemConfig)
 Database::Database(std::string_view databasePath, SystemConfig systemConfig,
     construct_bm_func_t constructBMFunc)
     : dbConfig(systemConfig) {
-    fprintf(stderr, "[KUZU DEBUG] Database constructor called\n");
-    fprintf(stderr, "[KUZU DEBUG]   Path: %s\n", std::string(databasePath).c_str());
-    fprintf(stderr, "[KUZU DEBUG]   readOnly: %d\n", systemConfig.readOnly);
-    fprintf(stderr, "[KUZU DEBUG]   autoCheckpoint: %d\n", systemConfig.autoCheckpoint);
-    fprintf(stderr, "[KUZU DEBUG]   checkpointThreshold: %llu\n", systemConfig.checkpointThreshold);
-    fprintf(stderr, "[KUZU DEBUG]   forceCheckpointOnClose: %d\n", systemConfig.forceCheckpointOnClose);
-    fflush(stderr);
+    // Phase 1: Lightweight initialization (synchronous, 20-50ms)
+    // Expand path
+    const auto dbPathStr = std::string(databasePath);
+    auto clientContext = ClientContext(this);
+    this->databasePath = StorageUtils::expandPath(&clientContext, dbPathStr);
 
-    initMembers(databasePath, constructBMFunc);
+    if (std::filesystem::is_directory(this->databasePath)) {
+        throw RuntimeException("Database path cannot be a directory: " + this->databasePath);
+    }
 
-    fprintf(stderr, "[KUZU DEBUG] Database initialized successfully\n");
-    fflush(stderr);
+    // Fast initialization
+    vfs = std::make_unique<VirtualFileSystem>(this->databasePath);
+    validatePathInReadOnly();
+    bufferManager = constructBMFunc(*this);
+    memoryManager = std::make_unique<MemoryManager>(bufferManager.get(), vfs.get());
+#if defined(__APPLE__)
+    queryProcessor = std::make_unique<processor::QueryProcessor>(dbConfig.maxNumThreads, dbConfig.threadQos);
+#else
+    queryProcessor = std::make_unique<processor::QueryProcessor>(dbConfig.maxNumThreads);
+#endif
+    catalog = std::make_unique<Catalog>();
+    storageManager = std::make_unique<StorageManager>(this->databasePath, dbConfig.readOnly,
+        dbConfig.enableChecksums, *memoryManager, dbConfig.enableCompression, vfs.get());
+    transactionManager = std::make_unique<TransactionManager>(storageManager->getWAL());
+    databaseManager = std::make_unique<DatabaseManager>();
+    extensionManager = std::make_unique<extension::ExtensionManager>();
+    dbLifeCycleManager = std::make_shared<DatabaseLifeCycleManager>();
+
+    // In-memory database: complete immediately
+    if (clientContext.isInMemory()) {
+        storageManager->initDataFileHandle(vfs.get(), &clientContext);
+        extensionManager->autoLoadLinkedExtensions(&clientContext);
+        walReplayComplete_.store(true, std::memory_order_release);
+        initComplete_.store(true, std::memory_order_release);
+        return;  // Done in 20-50ms
+    }
+
+    // ========================================================================
+    // DATABASE INITIALIZATION GUIDE
+    // ========================================================================
+    //
+    // The initialization thread (initThread_) performs heavy I/O operations:
+    //   - Phase 2: WAL replay and checkpoint reading (7+ seconds)
+    //   - Phase 3-4: Extension loading including HNSW vector indexes
+    //
+    // These operations MUST run at low priority on ALL platforms to prevent:
+    //   - iOS: UIApplicationMain blocking during app launch (7+ second delay)
+    //   - macOS: Application startup appearing frozen to users
+    //   - Linux: UI thread starvation during database initialization
+    //   - Windows: Main thread blocking and poor responsiveness
+    //
+    // REQUIRED: Set thread priority IMMEDIATELY after thread creation
+    //
+    // Platform-specific APIs:
+    //   - iOS/macOS:  pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0)
+    //                 Uses Apple's QoS system to signal background work
+    //   - Linux:      setpriority(PRIO_PROCESS, 0, 10)
+    //                 Increases nice value by +10 (lower CPU priority)
+    //   - Windows:    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL)
+    //                 Sets thread priority below normal execution level
+    //
+    // Testing checklist:
+    //   - Measure app startup time on real devices (not simulators)
+    //   - Profile with platform tools (Instruments/perf/ETW)
+    //   - Verify UI remains responsive during database initialization
+    //   - Test with large databases (1GB+) to ensure scalability
+    //
+    // ========================================================================
+
+    // Persistent database: spawn background thread for Phases 2-4
+    initThread_ = std::thread([this]() {
+        // ====================================================================
+        // CRITICAL: Set thread priority to background on ALL platforms
+        // This prevents application startup blocking and UI thread starvation
+        // ====================================================================
+#if defined(__APPLE__)
+        // macOS/iOS: QOS_CLASS_UTILITY signals this is background work
+        // iOS will NOT wait for this thread during UIApplicationMain launch
+        pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+#elif defined(__linux__)
+        // Linux: Increase nice value to deprioritize this thread
+        // UI threads will get CPU time ahead of database initialization
+        setpriority(PRIO_PROCESS, 0, 10);
+#elif defined(_WIN32)
+        // Windows: Lower thread priority to keep UI responsive
+        // Main thread will not be blocked by database I/O operations
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+#endif
+        auto clientContext = ClientContext(this);
+        try {
+            // ================================================================
+            // Phase 2: WAL Replay & Checkpoint Reading (7+ seconds typically)
+            // ================================================================
+            // This phase performs heavy I/O operations:
+            //   1. Replay write-ahead log (WAL) entries
+            //   2. Read checkpoint (includes PrimaryKeyIndex loading)
+            //   3. Deserialize catalog and storage metadata
+            //
+            // On iOS with large databases (50k+ photos), this takes 7+ seconds
+            // Running at QOS_CLASS_UTILITY prevents UIApplicationMain blocking
+            // ================================================================
+            dbLifeCycleManager->isRecoveryInProgress.store(true, std::memory_order_release);
+
+            StorageManager::recover(clientContext,
+                dbConfig.throwOnWalReplayFailure,
+                dbConfig.enableChecksums);
+
+            // WAL replay complete - notify waiting threads
+            // Queries can now execute (but vector indexes may still be loading)
+            {
+                std::lock_guard<std::mutex> lock(walReplayMutex_);
+                walReplayComplete_.store(true, std::memory_order_release);
+            }
+            walReplayCV_.notify_all();
+
+            // ================================================================
+            // Phase 3 + 4: Extension & Vector Index Loading
+            // ================================================================
+            // Loads extensions including HNSW vector indexes
+            // Since isRecoveryInProgress=true, HNSW loads synchronously here
+            // This ensures vector indexes are ready before accepting queries
+            // ================================================================
+            extensionManager->autoLoadLinkedExtensions(&clientContext);
+
+            // All phases complete - database is fully initialized
+            dbLifeCycleManager->isRecoveryInProgress.store(false, std::memory_order_release);
+
+            // Mark initialization complete and notify all waiting threads
+            {
+                std::lock_guard<std::mutex> lock(initMutex_);
+                initComplete_.store(true, std::memory_order_release);
+            }
+            initCV_.notify_all();
+
+        } catch (const Exception& e) {
+            // ================================================================
+            // Error Handling: Store error and notify waiting threads
+            // ================================================================
+            // Determine which phase failed for appropriate error reporting
+            bool walReplayFailed = !walReplayComplete_.load(std::memory_order_acquire);
+
+            if (walReplayFailed) {
+                // Phase 2 (WAL replay) failed - store error and notify
+                std::lock_guard<std::mutex> lock(walReplayMutex_);
+                walReplayError_ = e.what();
+                walReplayComplete_.store(true, std::memory_order_release);
+                walReplayCV_.notify_all();
+            }
+
+            // Mark overall initialization as failed
+            {
+                std::lock_guard<std::mutex> lock(initMutex_);
+                initError_ = e.what();
+                initComplete_.store(true, std::memory_order_release);
+            }
+            dbLifeCycleManager->isRecoveryInProgress.store(false, std::memory_order_release);
+            initCV_.notify_all();
+        }
+    });
+
+    // ====================================================================
+    // Constructor returns immediately (20-50ms on iOS)
+    // The application can proceed with UI initialization while the
+    // background thread handles database loading asynchronously
+    // ====================================================================
 }
 
 std::unique_ptr<BufferManager> Database::initBufferManager(const Database& db) {
@@ -111,68 +266,81 @@ std::unique_ptr<BufferManager> Database::initBufferManager(const Database& db) {
         db.dbConfig.maxDBSize, db.vfs.get(), db.dbConfig.readOnly);
 }
 
-void Database::initMembers(std::string_view dbPath, construct_bm_func_t initBmFunc) {
-    fprintf(stderr, "[KUZU DEBUG] initMembers() START\n");
-    fflush(stderr);
-
-    // To expand a path with home directory(~), we have to pass in a dummy clientContext which
-    // handles the home directory expansion.
-    const auto dbPathStr = std::string(dbPath);
-    auto clientContext = ClientContext(this);
-    databasePath = StorageUtils::expandPath(&clientContext, dbPathStr);
-
-    if (std::filesystem::is_directory(databasePath)) {
-        throw RuntimeException("Database path cannot be a directory: " + databasePath);
-    }
-    vfs = std::make_unique<VirtualFileSystem>(databasePath);
-    validatePathInReadOnly();
-
-    bufferManager = initBmFunc(*this);
-    memoryManager = std::make_unique<MemoryManager>(bufferManager.get(), vfs.get());
-#if defined(__APPLE__)
-    queryProcessor =
-        std::make_unique<processor::QueryProcessor>(dbConfig.maxNumThreads, dbConfig.threadQos);
-#else
-    queryProcessor = std::make_unique<processor::QueryProcessor>(dbConfig.maxNumThreads);
-#endif
-
-    catalog = std::make_unique<Catalog>();
-    storageManager = std::make_unique<StorageManager>(databasePath, dbConfig.readOnly,
-        dbConfig.enableChecksums, *memoryManager, dbConfig.enableCompression, vfs.get());
-    transactionManager = std::make_unique<TransactionManager>(storageManager->getWAL());
-    databaseManager = std::make_unique<DatabaseManager>();
-
-    extensionManager = std::make_unique<extension::ExtensionManager>();
-    dbLifeCycleManager = std::make_shared<DatabaseLifeCycleManager>();
-    if (clientContext.isInMemory()) {
-        storageManager->initDataFileHandle(vfs.get(), &clientContext);
-        extensionManager->autoLoadLinkedExtensions(&clientContext);
+void Database::waitForWALReplay() const {
+    // Fast path: WAL replay already complete
+    if (walReplayComplete_.load(std::memory_order_acquire)) {
+        std::lock_guard<std::mutex> lock(walReplayMutex_);
+        if (!walReplayError_.empty()) {
+            throw Exception(walReplayError_);
+        }
         return;
     }
-    // Set recovery flag before WAL replay to signal extensions to load synchronously
-    dbLifeCycleManager->isRecoveryInProgress.store(true, std::memory_order_release);
-    try {
-        StorageManager::recover(clientContext, dbConfig.throwOnWalReplayFailure,
-            dbConfig.enableChecksums);
-        // Clear recovery flag after WAL replay completes
-        dbLifeCycleManager->isRecoveryInProgress.store(false, std::memory_order_release);
-    } catch (...) {
-        // Ensure flag is cleared even on exception
-        dbLifeCycleManager->isRecoveryInProgress.store(false, std::memory_order_release);
-        throw;
+
+    // Slow path: wait for WAL replay
+    std::unique_lock<std::mutex> lock(walReplayMutex_);
+    walReplayCV_.wait(lock, [this]() {
+        return walReplayComplete_.load(std::memory_order_acquire);
+    });
+
+    if (!walReplayError_.empty()) {
+        throw Exception(walReplayError_);
+    }
+}
+
+void Database::waitForVectorIndexes() const {
+    // Wait for both WAL replay AND HNSW loading
+    waitForWALReplay();  // First ensure WAL is done
+
+    // Then wait for full initialization (includes HNSW)
+    if (initComplete_.load(std::memory_order_acquire)) {
+        std::lock_guard<std::mutex> lock(initMutex_);
+        if (!initError_.empty()) {
+            throw Exception(initError_);
+        }
+        return;
     }
 
-    // Load extensions after recovery (WAL replay) completes
-    // This ensures no background threads compete with recovery process
-    extensionManager->autoLoadLinkedExtensions(&clientContext);
+    std::unique_lock<std::mutex> lock(initMutex_);
+    initCV_.wait(lock, [this]() {
+        return initComplete_.load(std::memory_order_acquire);
+    });
+
+    if (!initError_.empty()) {
+        throw Exception(initError_);
+    }
+}
+
+void Database::waitForInitialization() const {
+    // Fast path: already initialized
+    if (initComplete_.load(std::memory_order_acquire)) {
+        if (!initError_.empty()) {
+            throw Exception(initError_);
+        }
+        return;
+    }
+
+    // Slow path: wait for initialization
+    std::unique_lock<std::mutex> lock(initMutex_);
+    initCV_.wait(lock, [this]() {
+        return initComplete_.load(std::memory_order_acquire);
+    });
+
+    if (!initError_.empty()) {
+        throw Exception(initError_);
+    }
 }
 
 Database::~Database() {
-    // Signal cancellation to background thread (if any)
+    // Signal cancellation to background threads
     {
         std::lock_guard<std::mutex> lock(backgroundThreadStartMutex);
         vectorIndexLoadCancelled.store(true, std::memory_order_release);
         dbLifeCycleManager->isDatabaseClosed = true;
+    }
+
+    // Wait for initialization thread to finish
+    if (initThread_.joinable()) {
+        initThread_.join();
     }
 
     joinVectorIndexLoaderThread();

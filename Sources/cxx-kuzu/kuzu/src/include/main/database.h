@@ -229,6 +229,42 @@ public:
                vectorIndexesLoadSuccess.load(std::memory_order_acquire);
     }
 
+    /**
+     * @brief Database initialization status
+     */
+    enum class InitStatus {
+        INITIALIZING,  ///< Background initialization in progress
+        READY,         ///< Initialization complete, database ready for use
+        FAILED         ///< Initialization failed
+    };
+
+    /**
+     * @brief Get the current initialization status
+     *
+     * @return Current initialization status
+     *
+     * @note Thread-safe
+     */
+    KUZU_API InitStatus getInitializationStatus() const {
+        if (initComplete_.load(std::memory_order_acquire)) {
+            std::lock_guard<std::mutex> lock(initMutex_);
+            return initError_.empty() ? InitStatus::READY : InitStatus::FAILED;
+        }
+        return InitStatus::INITIALIZING;
+    }
+
+    /**
+     * @brief Get initialization error message if failed
+     *
+     * @return Error message, or empty string if not failed
+     *
+     * @note Thread-safe
+     */
+    KUZU_API std::string getInitializationError() const {
+        std::lock_guard<std::mutex> lock(initMutex_);
+        return initError_;
+    }
+
     // Internal method for VectorExtension to notify loading completion
     KUZU_API void notifyVectorIndexLoadComplete(bool success, const std::string& errorMsg = "");
 
@@ -257,6 +293,44 @@ private:
         construct_bm_func_t constructBMFunc);
 
     void validatePathInReadOnly() const;
+
+    /**
+     * @brief Wait for WAL replay to complete
+     *
+     * Called internally before executing any database operation.
+     * Blocks if WAL replay is in progress, returns immediately if done.
+     * This is faster than waitForInitialization() as it doesn't wait for HNSW indexes.
+     *
+     * @throws Exception if WAL replay failed
+     *
+     * @note Thread-safe: Multiple threads can wait simultaneously
+     */
+    void waitForWALReplay() const;
+
+    /**
+     * @brief Wait for vector indexes (HNSW) to be ready
+     *
+     * Called internally before executing vector similarity queries.
+     * Blocks if HNSW loading is in progress, returns immediately if done.
+     *
+     * @throws Exception if HNSW loading failed
+     *
+     * @note Thread-safe: Multiple threads can wait simultaneously
+     */
+    void waitForVectorIndexes() const;
+
+    /**
+     * @brief Wait for complete initialization (WAL + HNSW)
+     *
+     * Called internally by Connection before executing queries.
+     * Blocks if initialization is in progress, returns immediately if done.
+     * Equivalent to waitForWALReplay() + waitForVectorIndexes().
+     *
+     * @throws Exception if initialization failed
+     *
+     * @note Thread-safe: Multiple threads can wait simultaneously
+     */
+    void waitForInitialization() const;
 
 private:
     std::string databasePath;
@@ -292,6 +366,19 @@ private:
     std::thread vectorIndexLoaderThread;
 
     void joinVectorIndexLoaderThread();
+
+    // Deferred initialization state
+    std::thread initThread_;                         ///< Background initialization thread
+    std::atomic<bool> initComplete_{false};          ///< True when initialization done (success or failure)
+    mutable std::mutex initMutex_;                   ///< Protects initError_
+    mutable std::condition_variable initCV_;         ///< Notifies waiters when initialization completes
+    std::string initError_;                          ///< Error message if initialization failed
+
+    // WAL replay completion state (subset of initialization)
+    std::atomic<bool> walReplayComplete_{false};     ///< True when WAL replay done (success or failure)
+    mutable std::mutex walReplayMutex_;              ///< Protects walReplayError_
+    mutable std::condition_variable walReplayCV_;    ///< Notifies waiters when WAL replay completes
+    std::string walReplayError_;                     ///< Error message if WAL replay failed
 };
 
 } // namespace main

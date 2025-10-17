@@ -1,5 +1,6 @@
 #include "storage/storage_manager.h"
 
+#include <chrono>
 #include "catalog/catalog_entry/node_table_catalog_entry.h"
 #include "catalog/catalog_entry/rel_group_catalog_entry.h"
 #include "common/file_system/virtual_file_system.h"
@@ -244,6 +245,7 @@ void StorageManager::deserialize(main::ClientContext* context, const Catalog* ca
     Deserializer& deSer) {
     fprintf(stderr, "[KUZU DEBUG] StorageManager::deserialize() START\n");
     fflush(stderr);
+    auto deserStart = std::chrono::steady_clock::now();
 
     std::string key;
     fprintf(stderr, "[KUZU DEBUG] StorageManager: validating num_node_tables\n");
@@ -255,6 +257,7 @@ void StorageManager::deserialize(main::ClientContext* context, const Catalog* ca
     fflush(stderr);
 
     for (auto i = 0u; i < numNodeTables; i++) {
+        auto tableStart = std::chrono::steady_clock::now();
         fprintf(stderr, "[KUZU DEBUG] StorageManager: deserializing node table %u/%llu\n", i + 1, numNodeTables);
         fflush(stderr);
         deSer.validateDebuggingInfo(key, "table_id");
@@ -274,7 +277,9 @@ void StorageManager::deserialize(main::ClientContext* context, const Catalog* ca
         fprintf(stderr, "[KUZU DEBUG] StorageManager: calling NodeTable::deserialize() for table %u\n", tableID);
         fflush(stderr);
         tables[tableID]->deserialize(context, this, deSer);
-        fprintf(stderr, "[KUZU DEBUG] StorageManager: NodeTable::deserialize() complete for table %u\n", tableID);
+        auto tableEnd = std::chrono::steady_clock::now();
+        fprintf(stderr, "[KUZU TIMING] NodeTable %u deserialize: %.2fms\n", tableID,
+            std::chrono::duration<double, std::milli>(tableEnd - tableStart).count());
         fflush(stderr);
     }
 
@@ -287,6 +292,7 @@ void StorageManager::deserialize(main::ClientContext* context, const Catalog* ca
     fflush(stderr);
 
     for (auto i = 0u; i < numRelGroups; i++) {
+        auto groupStart = std::chrono::steady_clock::now();
         fprintf(stderr, "[KUZU DEBUG] StorageManager: deserializing rel group %u/%llu\n", i + 1, numRelGroups);
         fflush(stderr);
         deSer.validateDebuggingInfo(key, "rel_group_id");
@@ -308,6 +314,7 @@ void StorageManager::deserialize(main::ClientContext* context, const Catalog* ca
         auto relGroupEntry = catalog->getTableCatalogEntry(&DUMMY_TRANSACTION, relGroupID)
                                  ->ptrCast<RelGroupCatalogEntry>();
         for (auto k = 0u; k < numInnerRelTables; k++) {
+            auto relTableStart = std::chrono::steady_clock::now();
             fprintf(stderr, "[KUZU DEBUG] StorageManager: deserializing inner rel table %u/%llu\n", k + 1, numInnerRelTables);
             fflush(stderr);
             RelTableCatalogInfo info = RelTableCatalogInfo::deserialize(deSer);
@@ -319,11 +326,20 @@ void StorageManager::deserialize(main::ClientContext* context, const Catalog* ca
             fprintf(stderr, "[KUZU DEBUG] StorageManager: calling RelTable::deserialize() for table %u\n", info.oid);
             fflush(stderr);
             tables.at(info.oid)->deserialize(context, this, deSer);
-            fprintf(stderr, "[KUZU DEBUG] StorageManager: RelTable::deserialize() complete for table %u\n", info.oid);
+            auto relTableEnd = std::chrono::steady_clock::now();
+            fprintf(stderr, "[KUZU TIMING] RelTable %u deserialize: %.2fms\n", info.oid,
+                std::chrono::duration<double, std::milli>(relTableEnd - relTableStart).count());
             fflush(stderr);
         }
+        auto groupEnd = std::chrono::steady_clock::now();
+        fprintf(stderr, "[KUZU TIMING] RelGroup %u total: %.2fms\n", relGroupID,
+            std::chrono::duration<double, std::milli>(groupEnd - groupStart).count());
+        fflush(stderr);
     }
-    fprintf(stderr, "[KUZU DEBUG] StorageManager::deserialize() COMPLETE\n");
+
+    auto deserEnd = std::chrono::steady_clock::now();
+    fprintf(stderr, "[KUZU TIMING] StorageManager::deserialize() TOTAL: %.2fms\n",
+        std::chrono::duration<double, std::milli>(deserEnd - deserStart).count());
     fflush(stderr);
 }
 

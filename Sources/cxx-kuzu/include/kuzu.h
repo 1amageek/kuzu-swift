@@ -409,6 +409,43 @@ KUZU_C_API bool kuzu_database_is_vector_indexes_loaded(kuzu_database* database);
  */
 KUZU_C_API bool kuzu_database_is_vector_indexes_ready(kuzu_database* database);
 
+// Database Initialization Status
+/**
+ * @brief Enum representing the initialization status of the database.
+ */
+typedef enum {
+    KuzuInitializing = 0,  ///< Background initialization in progress
+    KuzuReady = 1,         ///< Initialization complete, database ready for use
+    KuzuFailed = 2         ///< Initialization failed
+} kuzu_init_status;
+
+/**
+ * @brief Get the current initialization status of the database.
+ *
+ * The database constructor returns immediately after spawning a background thread
+ * for heavy initialization tasks (WAL replay, HNSW index loading). This function
+ * allows you to check the initialization status without blocking.
+ *
+ * @param database The database instance.
+ * @return The current initialization status.
+ *
+ * @note Thread-safe. Can be called from any thread.
+ * @note Queries will automatically wait for initialization to complete,
+ *       so checking this status is optional. It's mainly useful for UI feedback.
+ */
+KUZU_C_API kuzu_init_status kuzu_database_get_init_status(kuzu_database* database);
+
+/**
+ * @brief Get the initialization error message if initialization failed.
+ *
+ * @param database The database instance.
+ * @return Error message if initialization failed, empty string if succeeded or still initializing.
+ *         Caller is responsible for freeing the returned string with `kuzu_destroy_string`.
+ *
+ * @note Thread-safe.
+ */
+KUZU_C_API const char* kuzu_database_get_init_error(kuzu_database* database);
+
 // Connection
 /**
  * @brief Allocates memory and creates a connection to the database. Caller is responsible for

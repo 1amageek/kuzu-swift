@@ -349,6 +349,38 @@ KUZU_C_API void kuzu_database_destroy(kuzu_database* database);
 
 KUZU_C_API kuzu_system_config kuzu_default_system_config();
 
+// Database Initialization Status
+/**
+ * @brief Database initialization status enumeration.
+ */
+typedef enum {
+    KuzuInitializing = 0,  ///< Background initialization in progress
+    KuzuReady = 1,         ///< Initialization complete, database ready for use
+    KuzuFailed = 2         ///< Initialization failed
+} kuzu_init_status;
+
+/**
+ * @brief Get the current initialization status of the database.
+ *
+ * @param database The database instance.
+ * @return Current initialization status.
+ *
+ * @note Thread-safe.
+ */
+KUZU_C_API kuzu_init_status kuzu_database_get_init_status(kuzu_database* database);
+
+/**
+ * @brief Get initialization error message if failed.
+ *
+ * The caller is responsible for freeing the returned string with `kuzu_destroy_string`.
+ *
+ * @param database The database instance.
+ * @return Error message, or empty string if not failed.
+ *
+ * @note Thread-safe.
+ */
+KUZU_C_API const char* kuzu_database_get_init_error(kuzu_database* database);
+
 // Vector Index Loading
 /**
  * @brief Callback function type for vector index loading completion.

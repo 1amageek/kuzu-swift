@@ -254,16 +254,26 @@ void Checkpointer::readCheckpoint(main::ClientContext* context, catalog::Catalog
     StorageManager* storageManager) {
     fprintf(stderr, "[KUZU DEBUG] Checkpointer::readCheckpoint(overload) START\n");
     fflush(stderr);
+    auto readStart = std::chrono::steady_clock::now();
 
     auto fileInfo = storageManager->getDataFH()->getFileInfo();
     fprintf(stderr, "[KUZU DEBUG] Checkpointer: creating BufferedFileReader\n");
     fflush(stderr);
+    auto t1 = std::chrono::steady_clock::now();
     auto reader = std::make_unique<common::BufferedFileReader>(*fileInfo);
     common::Deserializer deSer(std::move(reader));
+    auto t2 = std::chrono::steady_clock::now();
+    fprintf(stderr, "[KUZU TIMING] BufferedFileReader creation: %.2fms\n",
+        std::chrono::duration<double, std::milli>(t2 - t1).count());
+    fflush(stderr);
 
     fprintf(stderr, "[KUZU DEBUG] Checkpointer: deserializing DatabaseHeader\n");
     fflush(stderr);
+    t1 = std::chrono::steady_clock::now();
     auto currentHeader = std::make_unique<DatabaseHeader>(DatabaseHeader::deserialize(deSer));
+    t2 = std::chrono::steady_clock::now();
+    fprintf(stderr, "[KUZU TIMING] DatabaseHeader deserialize: %.2fms\n",
+        std::chrono::duration<double, std::milli>(t2 - t1).count());
     fprintf(stderr, "[KUZU DEBUG] Checkpointer: DatabaseHeader deserialized - catalogPageRange.startPageIdx=%u\n",
         currentHeader->catalogPageRange.startPageIdx);
     fflush(stderr);
@@ -274,34 +284,52 @@ void Checkpointer::readCheckpoint(main::ClientContext* context, catalog::Catalog
         fprintf(stderr, "[KUZU DEBUG] Checkpointer: reading catalog at page %u\n",
             currentHeader->catalogPageRange.startPageIdx);
         fflush(stderr);
+        t1 = std::chrono::steady_clock::now();
         deSer.getReader()->cast<common::BufferedFileReader>()->resetReadOffset(
             currentHeader->catalogPageRange.startPageIdx * common::KUZU_PAGE_SIZE);
         catalog->deserialize(deSer);
-        fprintf(stderr, "[KUZU DEBUG] Checkpointer: catalog deserialized\n");
+        t2 = std::chrono::steady_clock::now();
+        fprintf(stderr, "[KUZU TIMING] Catalog deserialize: %.2fms\n",
+            std::chrono::duration<double, std::milli>(t2 - t1).count());
         fflush(stderr);
 
         fprintf(stderr, "[KUZU DEBUG] Checkpointer: reading storage manager metadata at page %u\n",
             currentHeader->metadataPageRange.startPageIdx);
         fflush(stderr);
+        t1 = std::chrono::steady_clock::now();
         deSer.getReader()->cast<common::BufferedFileReader>()->resetReadOffset(
             currentHeader->metadataPageRange.startPageIdx * common::KUZU_PAGE_SIZE);
         storageManager->deserialize(context, catalog, deSer);
-        fprintf(stderr, "[KUZU DEBUG] Checkpointer: storage manager deserialized\n");
+        t2 = std::chrono::steady_clock::now();
+        fprintf(stderr, "[KUZU TIMING] StorageManager deserialize: %.2fms\n",
+            std::chrono::duration<double, std::milli>(t2 - t1).count());
         fflush(stderr);
 
         fprintf(stderr, "[KUZU DEBUG] Checkpointer: deserializing page manager\n");
         fflush(stderr);
+        t1 = std::chrono::steady_clock::now();
         storageManager->getDataFH()->getPageManager()->deserialize(deSer);
-        fprintf(stderr, "[KUZU DEBUG] Checkpointer: page manager deserialized\n");
+        t2 = std::chrono::steady_clock::now();
+        fprintf(stderr, "[KUZU TIMING] PageManager deserialize: %.2fms\n",
+            std::chrono::duration<double, std::milli>(t2 - t1).count());
         fflush(stderr);
     } else {
         fprintf(stderr, "[KUZU DEBUG] Checkpointer: catalog page range is invalid, database is empty\n");
         fflush(stderr);
     }
+
     fprintf(stderr, "[KUZU DEBUG] Checkpointer: setting database header\n");
     fflush(stderr);
+    t1 = std::chrono::steady_clock::now();
     storageManager->setDatabaseHeader(std::move(currentHeader));
-    fprintf(stderr, "[KUZU DEBUG] Checkpointer::readCheckpoint(overload) COMPLETE\n");
+    t2 = std::chrono::steady_clock::now();
+    fprintf(stderr, "[KUZU TIMING] setDatabaseHeader: %.2fms\n",
+        std::chrono::duration<double, std::milli>(t2 - t1).count());
+    fflush(stderr);
+
+    auto readEnd = std::chrono::steady_clock::now();
+    fprintf(stderr, "[KUZU TIMING] Checkpointer::readCheckpoint(overload) TOTAL: %.2fms\n",
+        std::chrono::duration<double, std::milli>(readEnd - readStart).count());
     fflush(stderr);
 }
 

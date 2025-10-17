@@ -18,6 +18,16 @@ public enum VectorIndexesStatus {
     case failed(Error)
 }
 
+/// Represents the initialization status of the database.
+public enum DatabaseStatus {
+    /// Database initialization is in progress (background thread).
+    case initializing
+    /// Database is fully initialized and ready for all operations.
+    case ready
+    /// Database initialization failed with an error.
+    case failed(Error)
+}
+
 /// A class representing a Kuzu database instance.
 public final class Database: @unchecked Sendable {
     internal var cDatabase: kuzu_database
@@ -85,6 +95,41 @@ public final class Database: @unchecked Sendable {
             return .failed(KuzuError.vectorIndexLoadFailed("Vector index loading failed"))
         } else {
             return .loading
+        }
+    }
+
+    /// The current status of database initialization.
+    ///
+    /// This property indicates whether the database is still initializing,
+    /// fully ready for all operations, or has failed to initialize.
+    ///
+    /// The database constructor returns immediately after spawning a background thread
+    /// for heavy initialization tasks (WAL replay, HNSW index loading). This property
+    /// allows you to check the initialization status without blocking.
+    ///
+    /// - Returns: The current `DatabaseStatus`.
+    ///
+    /// - Note: Queries will automatically wait for initialization to complete,
+    ///         so checking this status is optional. It's mainly useful for UI feedback.
+    public var initializationStatus: DatabaseStatus {
+        let status = kuzu_database_get_init_status(&cDatabase)
+
+        switch status {
+        case KuzuInitializing:
+            return .initializing
+        case KuzuReady:
+            return .ready
+        case KuzuFailed:
+            let errorCString = kuzu_database_get_init_error(&cDatabase)
+            defer {
+                if let errorCString = errorCString {
+                    kuzu_destroy_string(UnsafeMutablePointer(mutating: errorCString))
+                }
+            }
+            let errorMsg = errorCString.map { String(cString: $0) } ?? "Unknown initialization error"
+            return .failed(KuzuError.databaseInitializationFailed(errorMsg))
+        default:
+            return .failed(KuzuError.databaseInitializationFailed("Unknown initialization status"))
         }
     }
 

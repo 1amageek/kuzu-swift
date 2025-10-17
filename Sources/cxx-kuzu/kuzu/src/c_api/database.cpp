@@ -103,3 +103,34 @@ bool kuzu_database_is_vector_indexes_ready(kuzu_database* database) {
     auto* db = static_cast<Database*>(database->_database);
     return db->isVectorIndexesReady();
 }
+
+// Database Initialization Status API
+kuzu_init_status kuzu_database_get_init_status(kuzu_database* database) {
+    if (database == nullptr || database->_database == nullptr) {
+        return KuzuFailed;
+    }
+
+    auto* db = static_cast<Database*>(database->_database);
+    auto status = db->getInitializationStatus();
+
+    switch (status) {
+        case Database::InitStatus::INITIALIZING:
+            return KuzuInitializing;
+        case Database::InitStatus::READY:
+            return KuzuReady;
+        case Database::InitStatus::FAILED:
+            return KuzuFailed;
+        default:
+            return KuzuFailed;
+    }
+}
+
+const char* kuzu_database_get_init_error(kuzu_database* database) {
+    if (database == nullptr || database->_database == nullptr) {
+        return strdup("");
+    }
+
+    auto* db = static_cast<Database*>(database->_database);
+    std::string errorMsg = db->getInitializationError();
+    return strdup(errorMsg.c_str());
+}

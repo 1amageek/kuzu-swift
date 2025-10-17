@@ -205,23 +205,22 @@ void VectorExtension::load(main::ClientContext* context) {
         return;
     }
 
-    // Check if extension is statically linked (test environment)
-    // Static-linked extensions should load synchronously for testing reliability
-#if defined(__STATIC_LINK_EXTENSION_TEST__) || !defined(BUILD_DYNAMIC_LOAD)
-    bool isStaticLinked = true;
-#else
-    bool isStaticLinked = false;
+    // Synchronous loading is ONLY required when background loading is impossible:
+
+#if defined(__SINGLE_THREADED__)
+    // Single-threaded build: std::thread is not available
+    loadHNSWIndexesSync(database, lifeCycleManager);
+    return;
 #endif
 
-    if (isStaticLinked) {
-        // Synchronous loading for static-linked extensions (tests)
-        // This ensures indexes are immediately ready for use after Database construction
-        loadHNSWIndexesSync(database, lifeCycleManager);
-        return;
-    }
+#if defined(__STATIC_LINK_EXTENSION_TEST__)
+    // Test environment: deterministic behavior required
+    loadHNSWIndexesSync(database, lifeCycleManager);
+    return;
+#endif
 
-    // Normal operation (dynamic extension): start background loading thread
-    // This allows the database to become available immediately while indexes load in background
+    // Default: Background loading for optimal user experience
+    // The database becomes available immediately while indexes load asynchronously
     std::thread loaderThread([database, lifeCycleManager]() {
         loadHNSWIndexesSync(database, lifeCycleManager);
     });

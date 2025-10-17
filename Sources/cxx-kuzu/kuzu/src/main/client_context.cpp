@@ -264,6 +264,10 @@ void ClientContext::cleanUp() {
 
 std::unique_ptr<PreparedStatement> ClientContext::prepareWithParams(std::string_view query,
     std::unordered_map<std::string, std::unique_ptr<Value>> inputParams) {
+    // Wait for deferred initialization before acquiring lock
+    // For most queries, WAL replay is sufficient (faster)
+    localDatabase->waitForWALReplay();
+
     std::unique_lock lck{mtx};
     auto parsedStatements = std::vector<std::shared_ptr<Statement>>();
     try {
@@ -310,6 +314,10 @@ std::unique_ptr<QueryResult> ClientContext::executeWithParams(PreparedStatement*
     std::unordered_map<std::string, std::unique_ptr<Value>> inputParams,
     std::optional<uint64_t> queryID) { // NOLINT(performance-unnecessary-value-param): It doesn't
     // make sense to pass the map as a const reference.
+    // Wait for deferred initialization before acquiring lock
+    // For most queries, WAL replay is sufficient (faster)
+    localDatabase->waitForWALReplay();
+
     lock_t lck{mtx};
     if (!preparedStatement->isSuccess()) {
         return QueryResult::getQueryResultWithError(preparedStatement->errMsg);
@@ -338,6 +346,25 @@ std::unique_ptr<QueryResult> ClientContext::executeWithParams(PreparedStatement*
 
 std::unique_ptr<QueryResult> ClientContext::query(std::string_view query,
     std::optional<uint64_t> queryID, QueryConfig config) {
+    // Wait for deferred initialization before acquiring lock
+    // Check if query contains vector operations (requires HNSW indexes)
+    std::string queryStr(query);
+    std::string queryUpper = queryStr;
+    StringUtils::toUpper(queryUpper);
+
+    bool hasVectorOps = queryUpper.find("L2_DISTANCE") != std::string::npos ||
+                        queryUpper.find("COSINE_SIMILARITY") != std::string::npos ||
+                        queryUpper.find("ARRAY_COSINE_SIMILARITY") != std::string::npos ||
+                        queryUpper.find("QUERY_VECTOR_INDEX") != std::string::npos;
+
+    if (hasVectorOps) {
+        // Vector operations require HNSW indexes to be loaded
+        localDatabase->waitForVectorIndexes();
+    } else {
+        // For most queries, WAL replay is sufficient (faster)
+        localDatabase->waitForWALReplay();
+    }
+
     lock_t lck{mtx};
     return queryNoLock(query, queryID, config);
 }
